@@ -6,6 +6,10 @@ import VisionKit
 
 private let swatches = ["1C1C1E", "8E8E93", "E5484D", "F76B15", "30A46C", "0091FF", "6E56CF", "D6409F"]
 private let highlights = ["FFD60A", "FF9F0A", "FF6B6B", "5EE28A", "64D2FF", "BF9BFF"]
+private let colorNames = [
+    "1C1C1E": "Black", "8E8E93": "Gray", "E5484D": "Red", "F76B15": "Orange", "30A46C": "Green", "0091FF": "Blue", "6E56CF": "Purple", "D6409F": "Pink",
+    "FFD60A": "Yellow", "FF9F0A": "Orange", "FF6B6B": "Red", "5EE28A": "Green", "64D2FF": "Blue", "BF9BFF": "Purple",
+]
 
 struct PenPreset: Codable, Hashable, Identifiable {
     var id: String { "\(style)-\(colorHex)-\(width)" }
@@ -79,13 +83,14 @@ struct IconButton: View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 18, weight: .medium))
-                .frame(width: 40, height: 42)
+                .frame(width: 44, height: 44)
                 .background(active ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 10))
                 .foregroundStyle(active ? Color.accentColor : Color.primary)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
 }
 
@@ -265,6 +270,19 @@ struct EditorView: View {
                 if !model.insertGraph(graphText) { model.message = "Couldn't read “\(graphText)” as a function of x." }
             }
         }
+        .overlay(alignment: .bottom) {
+            if let notice = model.notice {
+                Text(notice)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(2)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.bottom, 76)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: model.notice)
         .alert("Margin", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
             Button("OK") {}
         } message: {
@@ -657,7 +675,8 @@ struct EditorView: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Width \(width.formatted())")
+                .accessibilityLabel(["Thin", "Medium", "Thick"][widths.firstIndex(of: width) ?? 0])
+                .accessibilityAddTraits(selection.wrappedValue == width ? .isSelected : [])
             }
         }
     }
@@ -674,7 +693,8 @@ struct EditorView: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Color \(hex)")
+                .accessibilityLabel(colorNames[hex] ?? "Color")
+                .accessibilityAddTraits(selection.wrappedValue.hex == hex ? .isSelected : [])
             }
             ColorPicker("Custom color", selection: Binding(
                 get: { Color(uiColor: selection.wrappedValue) },

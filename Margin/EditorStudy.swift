@@ -599,7 +599,7 @@ extension EditorModel {
                 let math = try await AI.math(fromRecognized: text)
                 clean = math.unicode
                 UIPasteboard.general.string = math.latex
-                message = "Converted. The LaTeX is on your clipboard. Check it against your writing."
+                notify("Converted. The LaTeX is on your clipboard.")
             }
             registerStateUndo()
             removeInk(in: rect)
@@ -668,7 +668,7 @@ extension EditorModel {
         await working("Reading…") {
             let text = await regionText(rect)
             UIPasteboard.general.string = text
-            message = text.isEmpty ? "No text was found in that area." : "Copied: \(text)"
+            if text.isEmpty { message = "No text was found in that area." } else { notify("Copied") }
         }
     }
 
@@ -685,7 +685,7 @@ extension EditorModel {
     func regionToFlashcard(back: String) {
         guard let rect = regionRect, let file = saveRegionImage(rect) else { return }
         note.flashcards.append(Flashcard(front: "", back: back, frontImage: file))
-        message = "Card added. Write its answer under Study › Flashcards."
+        notify("Card added. Write its answer under Study › Flashcards.")
         regionRect = nil
         scheduleSave()
     }
@@ -696,7 +696,7 @@ extension EditorModel {
         note.excerpts.append(Excerpt(imageFile: file, pageID: note.pages[index].id, rect: rect))
         regionRect = nil
         scheduleSave()
-        message = "Saved to Excerpts."
+        notify("Saved to Excerpts")
     }
 
     func image(named file: String) -> UIImage? {

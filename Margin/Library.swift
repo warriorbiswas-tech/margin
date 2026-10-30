@@ -17,6 +17,7 @@ final class Library {
     @ObservationIgnored private var editing: Set<UUID> = []
     @ObservationIgnored private var syncing = false
     @ObservationIgnored private var syncAgain = false
+    @ObservationIgnored private var syncTask: Task<Void, Never>?
 
     init() {
         try? FileManager.default.createDirectory(at: notesDir, withIntermediateDirectories: true)
@@ -82,6 +83,7 @@ final class Library {
             try FileManager.default.createDirectory(at: dir(note.id), withIntermediateDirectories: true)
             try JSONEncoder().encode(note).write(to: dir(note.id).appendingPathComponent("note.json"), options: .atomic)
             if let i = notes.firstIndex(where: { $0.id == note.id }) { notes[i] = note } else { notes.append(note) }
+            syncSoon()
         } catch {
             lastError = "Couldn't save “\(note.title)”: \(error.localizedDescription)"
         }
@@ -189,6 +191,7 @@ final class Library {
         notes.removeAll { $0.id == id }
         UserDefaults.standard.removeObject(forKey: Self.positionKey(id))
         if Sync.folderName != nil { pendingDeletes.insert(id.uuidString) }
+        syncSoon()
     }
 
     // MARK: Study
@@ -263,6 +266,15 @@ final class Library {
 
     // MARK: Sync
 
+    /// Every save lands here, so each stroke and annotation reaches the folder a moment after it's made.
+    private func syncSoon() {
+        syncTask?.cancel()
+        syncTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled { await self?.sync() }
+        }
+    }
+
     @discardableResult
     func sync() async -> Sync.Outcome? {
         guard !syncing else {
@@ -299,7 +311,7 @@ final class Library {
             syncStatus = "\(outcome.failed) notes didn't sync: \(error)"
             lastError = "\(outcome.failed) notes didn't sync: \(error). Your notes on this iPad are safe."
         } else {
-            syncStatus = "Last synced at \(Date().formatted(date: .omitted, time: .shortened))"
+            syncStatus = "\(Sync.isInICloud ? "Saved to iCloud" : "Synced") at \(Date().formatted(date: .omitted, time: .shortened))"
         }
     }
 

@@ -26,6 +26,8 @@ struct LibraryView: View {
     @State private var reminderNote: Note?
     @State private var pendingSetup: NoteSetup?
     @State private var creating = false
+    @State private var deleting: Note?
+    @AppStorage("iCloudBannerDismissed") private var bannerDismissed = false
 
     struct TextPrompt {
         let title: String
@@ -232,7 +234,11 @@ struct LibraryView: View {
     // MARK: Grid
 
     private var grid: some View {
-        Group {
+        VStack(spacing: 0) {
+            if Sync.folderName == nil, !bannerDismissed {
+                ICloudBanner(library: library) { bannerDismissed = true }
+                    .padding([.horizontal, .top], 24)
+            }
             if visibleNotes.isEmpty {
                 if search.isEmpty {
                     ContentUnavailableView {
@@ -255,8 +261,20 @@ struct LibraryView: View {
                         }
                     }
                     .padding(24)
+                    if let status = library.syncStatus {
+                        Label(status, systemImage: "icloud")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 24)
+                    }
                 }
             }
+        }
+        .alert("Delete “\(deleting?.title ?? "")” Forever?", isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Delete", role: .destructive) { if let deleting { library.deleteForever(deleting.id) } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This can't be undone, and it's removed from your other devices too.")
         }
         .navigationTitle(title)
         .searchable(text: $search, prompt: "Search notes and handwriting")
@@ -289,7 +307,7 @@ struct LibraryView: View {
     @ViewBuilder private func menu(for note: Note) -> some View {
         if note.deletedAt != nil {
             Button("Restore", systemImage: "arrow.uturn.backward") { library.restore(note.id) }
-            Button("Delete Forever", systemImage: "trash", role: .destructive) { library.deleteForever(note.id) }
+            Button("Delete Forever", systemImage: "trash", role: .destructive) { deleting = note }
         } else {
             Button("Rename", systemImage: "pencil") {
                 ask("Rename Note", initial: note.title) { if !$0.isEmpty { library.rename(note.id, to: $0) } }
@@ -338,6 +356,39 @@ struct LibraryView: View {
     }
 }
 
+/// Asks in place rather than on launch, since Apple's privacy rules leave choosing the folder to the person.
+struct ICloudBanner: View {
+    let library: Library
+    let dismiss: () -> Void
+    @State private var picking = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: "icloud").font(.title2).foregroundStyle(Color.accentColor).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep Every Note in iCloud").font(.subheadline.weight(.semibold))
+                    Text("Choose a folder in iCloud Drive and Margin saves all your notes and annotations there.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 12) {
+                    Button("Choose Folder") { picking = true }.buttonStyle(.borderedProminent)
+                    Button("Not Now", action: dismiss)
+                }
+                .font(.subheadline)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .fileImporter(isPresented: $picking, allowedContentTypes: [.folder]) { result in
+            guard case let .success(url) = result, (try? Sync.setFolder(url)) != nil else { return }
+            Task { await library.sync() }
+        }
+    }
+}
+
 struct NoteCard: View {
     let note: Note
     let library: Library
@@ -356,20 +407,29 @@ struct NoteCard: View {
                     Color.white
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220, alignment: .top)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
+            .frame(maxWidth: .infinity, alignment: .top)
+            .aspectRatio(8.5 / 11, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
+            .shadow(color: .black.opacity(0.12), radius: 6, y: 3)
             .accessibilityHidden(true)
 
-            Text(note.title).font(.subheadline.weight(.semibold)).lineLimit(1)
-            HStack(spacing: 6) {
-                Text(note.updatedAt.formatted(date: .abbreviated, time: .omitted))
-                if note.favorite { Image(systemName: "star.fill").foregroundStyle(.yellow).accessibilityLabel("Favorite") }
-                if !note.recordings.isEmpty { Image(systemName: "waveform").accessibilityLabel("Has audio") }
-                if note.locked { Image(systemName: "lock.fill").accessibilityLabel("Locked") }
+            // The rule down a ruled page's left side, which is what the app is named for.
+            HStack(alignment: .top, spacing: 8) {
+                Rectangle().fill(Color.accentColor).frame(width: 1.5).accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(note.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    HStack(spacing: 6) {
+                        Text(note.updatedAt.formatted(date: .abbreviated, time: .omitted))
+                        if note.favorite { Image(systemName: "star.fill").foregroundStyle(.yellow).accessibilityLabel("Favorite") }
+                        if !note.recordings.isEmpty { Image(systemName: "waveform").accessibilityLabel("Has audio") }
+                        if note.locked { Image(systemName: "lock.fill").accessibilityLabel("Locked") }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
@@ -449,6 +509,9 @@ struct SettingsView: View {
                             folder = nil
                             status = nil
                         }
+                    }
+                    if folder != nil, !Sync.isInICloud {
+                        Text("This folder isn't in iCloud Drive, so your notes won't reach iCloud.").foregroundStyle(.red)
                     }
                     if let line = status ?? library.syncStatus { Text(line).foregroundStyle(.secondary) }
                 } header: {

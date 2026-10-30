@@ -6,8 +6,16 @@ struct MarginApp: App {
     @AppStorage("theme") private var theme = "system"
     @Environment(\.scenePhase) private var scenePhase
 
+    // The library's titles are the one place Margin speaks in its own voice, like a heading on a notebook's cover.
+    private static let serifTitles: Void = {
+        let title = UIFont.preferredFont(forTextStyle: .largeTitle)
+        let serif = title.fontDescriptor.withDesign(.serif)?.withSymbolicTraits(.traitBold)
+        UINavigationBar.appearance().largeTitleTextAttributes = [.font: UIFontMetrics(forTextStyle: .largeTitle).scaledFont(for: UIFont(descriptor: serif ?? title.fontDescriptor, size: 34))]
+    }()
+
     var body: some Scene {
         WindowGroup(id: "library") {
+            let _ = Self.serifTitles
             LibraryView(library: library)
                 .preferredColorScheme(theme == "dark" ? .dark : theme == "light" ? .light : nil)
                 .onChange(of: scenePhase) { _, phase in

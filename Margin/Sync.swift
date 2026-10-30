@@ -13,6 +13,7 @@ enum Sync {
     private static let folder = "Margin Notes"
 
     static var folderName: String? { resolve()?.lastPathComponent }
+    static var isInICloud: Bool { resolve()?.path.contains("Mobile Documents") ?? false }
 
     static func setFolder(_ url: URL) throws {
         let scoped = url.startAccessingSecurityScopedResource()

@@ -118,6 +118,19 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     var note: Note
     var message: String?
+    private(set) var notice: String?
+    @ObservationIgnored private var noticeTask: Task<Void, Never>?
+
+    /// Good news that needs no answer, so it passes by rather than interrupting.
+    func notify(_ text: String) {
+        notice = text
+        UIAccessibility.post(notification: .announcement, argument: text)
+        noticeTask?.cancel()
+        noticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2.5))
+            if !Task.isCancelled { self?.notice = nil }
+        }
+    }
 
     var tool: Tool = .pen {
         didSet {
@@ -595,7 +608,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             overlay.commitEditing()
             liveSince = Date()
             applyTool()
-            message = "Scribble didn't turn that into text, so Live Text is reading your ink instead, which is less accurate. Check that Scribble is on in iPad Settings › Apple Pencil, then turn Live Text off and on."
+            notify("Scribble isn't responding, so Live Text is reading your ink.")
         }
     }
 
