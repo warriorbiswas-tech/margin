@@ -77,10 +77,12 @@ struct LibraryView: View {
                 grid
             }
         }
+        .onAppear { resumeLastNote() }
         .fullScreenCover(item: $editor) { model in
             EditorView(model: model) {
                 model.close()
                 editor = nil
+                UserDefaults.standard.removeObject(forKey: Self.lastNoteKey)
             }
             .onChange(of: model.openNoteRequest) { _, id in
                 guard let id, let target = library.notes.first(where: { $0.id == id }) else { return }
@@ -122,9 +124,22 @@ struct LibraryView: View {
         }
     }
 
+    private static let lastNoteKey = "lastOpenNote"
+    private static var resumed = false
+
+    /// If Margin was left inside a note, it comes back there. Going back to the library first means starting from the library.
+    private func resumeLastNote() {
+        guard !Self.resumed else { return }
+        Self.resumed = true
+        guard let id = UserDefaults.standard.string(forKey: Self.lastNoteKey),
+              let note = library.notes.first(where: { $0.id.uuidString == id && $0.deletedAt == nil && !$0.locked }) else { return }
+        open(note)
+    }
+
     /// Face ID is a privacy lock for the screen; files aren't separately encrypted beyond iOS's own data protection.
     private func open(_ note: Note) {
         guard library.beginEditing(note.id) else { return }
+        UserDefaults.standard.set(note.id.uuidString, forKey: Self.lastNoteKey)
         guard note.locked else {
             let model = EditorModel(note: note, library: library)
             model.apply(pendingSetup)
@@ -386,11 +401,9 @@ struct SettingsView: View {
     @AppStorage("eraserReturns") private var eraserReturns = true
     @AppStorage("theme") private var theme = "system"
     @AppStorage("invertPages") private var invertPages = true
-    @State private var folder = Backup.folderName
+    @State private var folder = Sync.folderName
     @State private var pickingFolder = false
-    @State private var pickingRestore = false
     @State private var status: String?
-    @State private var backingUp = false
 
     var body: some View {
         NavigationStack {
@@ -424,32 +437,24 @@ struct SettingsView: View {
                 } header: {
                     Text("On-Device AI")
                 } footer: {
-                    Text("Summaries, chat, flashcards, quizzes and transcripts run entirely on this iPad with open-source models. They download once from Hugging Face, then work offline. Your notes never leave the device.")
+                    Text("Summaries, chat, flashcards, quizzes and transcripts run entirely on this iPad with open-source models. They download once from Hugging Face, then work offline. The AI never sends your notes anywhere.")
                 }
                 Section {
                     LabeledContent("Folder", value: folder ?? "Not set")
-                    Button(folder == nil ? "Choose Backup Folder" : "Change Folder") { pickingFolder = true }
+                    Button(folder == nil ? "Choose iCloud Drive Folder" : "Change Folder") { pickingFolder = true }
                     if folder != nil {
-                        Button(backingUp ? "Backing Up…" : "Back Up Now") {
-                            backingUp = true
-                            Task {
-                                let count = await library.backUp()
-                                status = "Backed up \(count) changed notes."
-                                backingUp = false
-                            }
-                        }
-                        .disabled(backingUp)
-                        Button("Stop Backing Up", role: .destructive) {
-                            Backup.clearFolder()
+                        Button("Sync Now") { syncNow() }
+                        Button("Stop Syncing", role: .destructive) {
+                            Sync.clearFolder()
                             folder = nil
+                            status = nil
                         }
                     }
-                    Button("Restore from a Backup") { pickingRestore = true }
-                    if let status { Text(status).foregroundStyle(.secondary) }
+                    if let line = status ?? library.syncStatus { Text(line).foregroundStyle(.secondary) }
                 } header: {
-                    Text("Backup")
+                    Text("iCloud Sync")
                 } footer: {
-                    Text("Pick a folder in iCloud Drive, Dropbox or anywhere in Files. Notes copy there when you close them. Restore on another iPad to move your notes across.")
+                    Text("In the picker, open iCloud Drive and choose or create a folder. Margin keeps your notes in it and syncs when you open the app, close a note or leave the app. Choose the same folder on another device to get them there.")
                 }
             }
             .navigationTitle("Settings")
@@ -458,20 +463,21 @@ struct SettingsView: View {
             .fileImporter(isPresented: $pickingFolder, allowedContentTypes: [.folder]) { result in
                 guard case let .success(url) = result else { return }
                 do {
-                    try Backup.setFolder(url)
-                    folder = Backup.folderName
-                    Task {
-                        let count = await library.backUp()
-                        status = "Backed up \(count) notes."
-                    }
+                    try Sync.setFolder(url)
+                    folder = Sync.folderName
+                    syncNow()
                 } catch {
                     status = "Couldn't use that folder: \(error.localizedDescription)"
                 }
             }
-            .fileImporter(isPresented: $pickingRestore, allowedContentTypes: [.folder]) { result in
-                guard case let .success(url) = result else { return }
-                status = "Restored \(library.restoreBackup(from: url)) notes."
-            }
+        }
+    }
+
+    private func syncNow() {
+        status = "Syncing…"
+        Task {
+            await library.sync()
+            status = nil
         }
     }
 }

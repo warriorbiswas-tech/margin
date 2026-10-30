@@ -565,6 +565,7 @@ struct EditorView: View {
         Toggle(isOn: $model.liveText) { Label("Live Text", systemImage: "character.cursor.ibeam") }
             .toggleStyle(.button)
         if model.liveText {
+            IconButton(icon: "keyboard", label: "Type with Keyboard") { model.typeWithKeyboard() }
             fontMenu(TextFonts.title(model.liveFont), target: .live) { model.liveFont = $0 }
             Menu(model.liveSize == 0 ? "Auto Size" : "\(Int(model.liveSize)) pt") {
                 Button("Auto") { model.liveSize = 0 }

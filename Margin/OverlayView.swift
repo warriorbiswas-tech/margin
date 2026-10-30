@@ -27,6 +27,14 @@ final class TouchTrail: UIGestureRecognizer, UIGestureRecognizerDelegate {
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }
 
+/// A text box's own edits stay out of the note's undo history, where they'd be steps that undo nothing once it closes.
+/// It also leaves the three-finger tap to the note, rather than the system's editing menu.
+private final class BoxEditor: UITextView {
+    private let ownUndo = UndoManager()
+    override var undoManager: UndoManager? { ownUndo }
+    override var editingInteractionConfiguration: UIEditingInteractionConfiguration { .none }
+}
+
 /// Sits above the ink and takes touches for every tool that isn't writing, and during playback.
 /// Element views stay below the ink so you can write on top of them; this layer only handles the gestures.
 final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate {
@@ -48,7 +56,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
     private let handle = UIView()
     private let regionLayer = CAShapeLayer()
     private let zoomLayer = CAShapeLayer()
-    private var editor: UITextView?
+    private var editor: BoxEditor?
     private var dragStart = CGRect.zero
     private var dragOrigin = CGPoint.zero
     private var dragging: UUID?
@@ -326,7 +334,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
 
     // MARK: Text editing
 
-    private func beginEditing(_ el: Element) {
+    func beginEditing(_ el: Element) {
         guard let model else { return }
         model.textSize = el.fontSize
         model.textColor = UIColor(hex: el.colorHex)
@@ -335,7 +343,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         model.editingElementID = el.id
         model.syncElements()
 
-        let view = UITextView(frame: el.rect)
+        let view = BoxEditor(frame: el.rect)
         view.backgroundColor = el.fillHex.map { UIColor(hex: $0) } ?? .clear
         view.tintColor = .systemBlue
         view.overrideUserInterfaceStyle = .light
@@ -347,6 +355,15 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         view.text = el.text
         view.delegate = self
         view.contentScaleFactor = window?.screen.scale ?? 2
+        if model.scribbleActive {
+            // Handwriting needs no keyboard or cursor. An empty input view keeps the keyboard and its bar away.
+            view.inputView = UIView()
+            view.tintColor = .clear
+            view.inputAssistantItem.leadingBarButtonGroups = []
+            view.inputAssistantItem.trailingBarButtonGroups = []
+            view.autocorrectionType = .no
+            view.spellCheckingType = .no
+        }
         addSubview(view)
         editor = view
         view.becomeFirstResponder()

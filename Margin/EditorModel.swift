@@ -97,7 +97,7 @@ final class TiledView: UIView {
 }
 
 @MainActor @Observable
-final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilInteractionDelegate {
+final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PKCanvasViewDelegate, UIPencilInteractionDelegate {
     @ObservationIgnored let library: Library
     @ObservationIgnored let canvas = PKCanvasView()
     @ObservationIgnored let overlay = OverlayView()
@@ -288,6 +288,9 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         twoFinger.numberOfTouchesRequired = 2
         let threeFinger = UITapGestureRecognizer(target: self, action: #selector(tapRedo))
         threeFinger.numberOfTouchesRequired = 3
+        twoFinger.require(toFail: threeFinger) // three fingers rarely land together
+        twoFinger.delegate = self
+        threeFinger.delegate = self
         canvas.addGestureRecognizer(twoFinger)
         canvas.addGestureRecognizer(threeFinger)
 
@@ -301,15 +304,29 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
 
     func containerDidLayout(size: CGSize) {
         guard size.width > 0, size.width != lastWidth else { return }
-        let top = canvas.contentOffset.y / max(canvas.zoomScale, 0.01)
-        let factor = lastWidth > 0 ? canvas.zoomScale / (lastWidth / NoteLayout.width) : 1
+        var left: CGFloat?, top = canvas.contentOffset.y / max(canvas.zoomScale, 0.01)
+        var factor = lastWidth > 0 ? canvas.zoomScale / (lastWidth / NoteLayout.width) : 1
+        if lastWidth == 0, let saved = UserDefaults.standard.array(forKey: positionKey) as? [Double], saved.count == 3 {
+            (left, top, factor) = (saved[0], saved[1], saved[2])
+        }
         lastWidth = size.width
         let fit = size.width / NoteLayout.width
         canvas.minimumZoomScale = fit * 0.4
         canvas.maximumZoomScale = fit * 6
         canvas.zoomScale = fit * factor
         updateForZoom()
-        canvas.contentOffset = CGPoint(x: -canvas.contentInset.left, y: top * canvas.zoomScale)
+        let z = canvas.zoomScale
+        let x = left.map { min($0 * z, max(canvas.contentSize.width - size.width, 0)) } ?? -canvas.contentInset.left
+        canvas.contentOffset = CGPoint(x: max(x, -canvas.contentInset.left), y: min(top * z, canvas.contentSize.height))
+    }
+
+    private var positionKey: String { Library.positionKey(note.id) }
+
+    /// Where this note was left, in page coordinates, so it reopens there at the same zoom.
+    private func rememberPosition() {
+        guard lastWidth > 0 else { return }
+        let z = max(canvas.zoomScale, 0.01)
+        UserDefaults.standard.set([canvas.contentOffset.x / z, canvas.contentOffset.y / z, z / (lastWidth / NoteLayout.width)].map(Double.init), forKey: positionKey)
     }
 
     func setZoom(percent: CGFloat) {
@@ -488,8 +505,28 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         }
     }
 
-    func undo() { canvas.undoManager?.undo() }
-    func redo() { canvas.undoManager?.redo() }
+    func undo() {
+        overlay.commitEditing()
+        canvas.undoManager?.undo()
+    }
+
+    func redo() {
+        overlay.commitEditing()
+        canvas.undoManager?.redo()
+    }
+
+    // Scrolling, drawing or a text box must never swallow the undo gestures.
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+    /// The way to a real keyboard, for when handwriting won't do. Carries on in the box being written, if there is one.
+    func typeWithKeyboard() {
+        let current = editingElementID
+        overlay.commitEditing()
+        tool = .text
+        let el = note.elements.first { $0.id == current } ?? addTextBox(at: visibleCenter())
+        selectedElementID = el.id
+        overlay.beginEditing(el)
+    }
     @objc private func tapUndo() { if playing == nil { undo() } }
     @objc private func tapRedo() { if playing == nil { redo() } }
 
@@ -756,6 +793,7 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
 
     func saveNow() {
         saveTask?.cancel()
+        rememberPosition()
         let drawing = currentDrawing
         guard note != savedNote || drawing != savedDrawing else { return }
         do {
@@ -809,7 +847,7 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         if !finishingRecorder { library.endEditing(note.id) }
         indexInBackground()
         let library = library
-        Task { await library.backUp() }
+        Task { await library.sync() }
     }
 
     private func indexInBackground() {

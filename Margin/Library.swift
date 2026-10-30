@@ -9,11 +9,14 @@ final class Library {
     private(set) var notes: [Note] = []
     private(set) var subjects: [Subject] = []
     var lastError: String?
+    var syncStatus: String?
 
     @ObservationIgnored private let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
     @ObservationIgnored private var notesDir: URL { root.appendingPathComponent("Notes", isDirectory: true) }
     @ObservationIgnored var subjectsFile: URL { root.appendingPathComponent("subjects.json") }
     @ObservationIgnored private var editing: Set<UUID> = []
+    @ObservationIgnored private var syncing = false
+    @ObservationIgnored private var syncAgain = false
 
     init() {
         try? FileManager.default.createDirectory(at: notesDir, withIntermediateDirectories: true)
@@ -41,6 +44,8 @@ final class Library {
     }
 
     func endEditing(_ id: UUID) { editing.remove(id) }
+
+    static func positionKey(_ id: UUID) -> String { "position-\(id.uuidString)" }
 
     func dir(_ id: UUID) -> URL { notesDir.appendingPathComponent(id.uuidString, isDirectory: true) }
     func drawingURL(_ id: UUID) -> URL { dir(id).appendingPathComponent("drawing.data") }
@@ -182,6 +187,8 @@ final class Library {
     func deleteForever(_ id: UUID) {
         try? FileManager.default.removeItem(at: dir(id))
         notes.removeAll { $0.id == id }
+        UserDefaults.standard.removeObject(forKey: Self.positionKey(id))
+        if Sync.folderName != nil { pendingDeletes.insert(id.uuidString) }
     }
 
     // MARK: Study
@@ -254,47 +261,51 @@ final class Library {
         return (note, drawing ?? PKDrawing())
     }
 
-    // MARK: Backup
-
-    private var backupItems: [(id: UUID, updatedAt: Date, dir: URL)] {
-        notes.map { ($0.id, $0.updatedAt, dir($0.id)) }
-    }
+    // MARK: Sync
 
     @discardableResult
-    func backUp() async -> Int {
-        let items = backupItems, subjects = subjectsFile
-        do {
-            return try await Task.detached(priority: .utility) { try Backup.run(notes: items, subjectsFile: subjects) }.value
-        } catch {
-            lastError = "Backup failed: \(error.localizedDescription). Your notes on this iPad are safe."
-            return 0
+    func sync() async -> Sync.Outcome? {
+        guard !syncing else {
+            syncAgain = true
+            return nil
+        }
+        syncing = true
+        defer { syncing = false }
+        var outcome: Sync.Outcome?
+        repeat {
+            syncAgain = false
+            let notes = notesDir, subjects = subjectsFile, open = Set(editing.map(\.uuidString)), deleted = pendingDeletes
+            do {
+                outcome = try await Task.detached(priority: .utility) { try Sync.run(notes: notes, subjects: subjects, open: open, deleted: deleted) }.value
+                guard let outcome else { return nil }
+                pendingDeletes.subtract(deleted)
+                refresh(after: outcome)
+            } catch {
+                syncStatus = "Sync failed: \(error.localizedDescription)"
+                lastError = "Couldn't reach your sync folder: \(error.localizedDescription). Your notes on this iPad are safe."
+                return nil
+            }
+        } while syncAgain
+        return outcome
+    }
+
+    private func refresh(after outcome: Sync.Outcome) {
+        if outcome.downloaded + outcome.removed > 0 {
+            load()
+        } else if let data = try? Data(contentsOf: subjectsFile), let saved = try? JSONDecoder().decode([Subject].self, from: data), saved != subjects {
+            subjects = saved
+        }
+        if let error = outcome.firstError {
+            syncStatus = "\(outcome.failed) notes didn't sync: \(error)"
+            lastError = "\(outcome.failed) notes didn't sync: \(error). Your notes on this iPad are safe."
+        } else {
+            syncStatus = "Last synced at \(Date().formatted(date: .omitted, time: .shortened))"
         }
     }
 
-    func restoreBackup(from url: URL) -> Int {
-        let scoped = url.startAccessingSecurityScopedResource()
-        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let fm = FileManager.default
-        let root = fm.fileExists(atPath: url.appendingPathComponent("Margin Backup").path) ? url.appendingPathComponent("Margin Backup") : url
-        let dirs = (try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-        var restored = 0
-        for source in dirs {
-            guard let data = try? Data(contentsOf: source.appendingPathComponent("note.json")),
-                  let incoming = try? JSONDecoder().decode(Note.self, from: data) else { continue }
-            if let mine = notes.first(where: { $0.id == incoming.id }), mine.updatedAt >= incoming.updatedAt { continue }
-            guard !editing.contains(incoming.id) else { continue }
-            let incomingDir = notesDir.appendingPathComponent(".restore-\(incoming.id.uuidString)", isDirectory: true)
-            try? fm.removeItem(at: incomingDir)
-            guard (try? fm.copyItem(at: source, to: incomingDir)) != nil else { continue }
-            try? fm.removeItem(at: dir(incoming.id))
-            guard (try? fm.moveItem(at: incomingDir, to: dir(incoming.id))) != nil else { continue }
-            restored += 1
-        }
-        if subjects.isEmpty, let data = try? Data(contentsOf: root.appendingPathComponent("subjects.json")) {
-            try? data.write(to: subjectsFile, options: .atomic)
-        }
-        load()
-        return restored
+    private var pendingDeletes: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "syncDeleted") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "syncDeleted") }
     }
 
     // MARK: Subjects
