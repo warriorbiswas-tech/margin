@@ -111,16 +111,19 @@ extension EditorModel {
                 }
                 return PKStroke(ink: ink, path: PKStrokePath(controlPoints: points, creationDate: date))
             }
-            let thin = PKInk(.pen, color: stroke.ink.color.withAlphaComponent(1))
+            // Highlighter colors are too pale to read as a thin line, so these marks use a deeper shade.
+            var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+            stroke.ink.color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+            let thin = PKInk(.pen, color: UIColor(hue: hue, saturation: saturation, brightness: brightness * 0.75, alpha: 1))
             switch mark {
             case .highlight:
                 return make(stroke.ink, [CGPoint(x: left, y: top + height / 2), CGPoint(x: right, y: top + height / 2)], size: height * 1.6) // a marker lays down about 60% of its size
             case .underline:
-                return make(thin, [CGPoint(x: left, y: top + height), CGPoint(x: right, y: top + height)], size: 2)
+                return make(thin, [CGPoint(x: left, y: top + height), CGPoint(x: right, y: top + height)], size: 3)
             case .strikeout:
-                return make(thin, [CGPoint(x: left, y: top + height / 2), CGPoint(x: right, y: top + height / 2)], size: 2)
+                return make(thin, [CGPoint(x: left, y: top + height / 2), CGPoint(x: right, y: top + height / 2)], size: 3)
             case .squiggle:
-                return make(thin, ShapeSnap.squiggle(fromX: left, toX: right, y: top + height), size: 1.5)
+                return make(thin, ShapeSnap.squiggle(fromX: left, toX: right, y: top + height), size: 2.5)
             }
         }
         guard !lines.isEmpty else { return }
