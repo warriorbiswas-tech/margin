@@ -627,11 +627,13 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         if canRedo != history.canRedo { canRedo = history.canRedo }
     }
 
-    /// Replaces the ink without it counting as something the pen just did.
+    /// Replaces the ink without it counting as something the pen just did. A PKDrawing remembers its past and merges
+    /// with the canvas on the next stroke, so handing back an older one would bring undone ink back. A new one has no past.
     func setInk(_ drawing: PKDrawing) {
-        inkOnRecord = drawing
-        lastStrokeCount = drawing.strokes.count
-        canvas.drawing = drawing
+        let fresh = PKDrawing(strokes: drawing.strokes)
+        inkOnRecord = fresh
+        lastStrokeCount = fresh.strokes.count
+        canvas.drawing = fresh
     }
 
     // Scrolling, drawing or a text box must never swallow the undo gestures.
