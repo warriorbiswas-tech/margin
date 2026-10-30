@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 enum AIError: LocalizedError {
@@ -51,10 +52,15 @@ final class LocalLLM: @unchecked Sendable {
     static let contextTokens: Int32 = 8192
 
     private let queue = DispatchQueue(label: "margin.llm", qos: .userInitiated)
+    private let queueKey = DispatchSpecificKey<Void>()
     private var handle: OpaquePointer?
     private let stateLock = NSLock()
     private var current: Run?
     private var inBackground = false
+
+    init() {
+        queue.setSpecific(key: queueKey, value: ())
+    }
 
     /// Called as the app enters and leaves the screen. Ends any answer in progress before iOS revokes the GPU.
     func setInBackground(_ background: Bool) {
@@ -62,6 +68,7 @@ final class LocalLLM: @unchecked Sendable {
             inBackground = background
             if background { current?.cancelled = true }
         }
+        if background { unload() }
     }
 
     private final class Run: @unchecked Sendable {
@@ -73,9 +80,14 @@ final class LocalLLM: @unchecked Sendable {
 
     /// Frees the model's memory; it reloads on the next request.
     func unload() {
-        queue.async { [self] in
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
             margin_llm_close(handle)
             handle = nil
+        } else {
+            queue.sync { [self] in
+                margin_llm_close(handle)
+                handle = nil
+            }
         }
     }
 
@@ -141,13 +153,44 @@ struct MindNode: Codable, Hashable {
     let children: [MindNode]?
 }
 
+/// Remembers condensed passages on disk, so a long job picks up where it stopped and never repeats work.
+final class Digester: @unchecked Sendable {
+    private let url: URL?
+    private let lock = NSLock()
+    private var saved: [String: String]
+    let onProgress: @Sendable (_ done: Int, _ total: Int) -> Void
+
+    init(cacheURL: URL?, onProgress: @escaping @Sendable (Int, Int) -> Void) {
+        url = cacheURL
+        self.onProgress = onProgress
+        saved = cacheURL.flatMap { try? Data(contentsOf: $0) }.flatMap { try? JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
+    }
+
+    private func key(_ text: String) -> String {
+        SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func cached(_ text: String) -> String? { lock.withLock { saved[key(text)] } }
+
+    func store(_ result: String, for text: String) {
+        lock.withLock {
+            saved[key(text)] = result
+            if let url, let data = try? JSONEncoder().encode(saved) { try? data.write(to: url, options: .atomic) }
+        }
+    }
+}
+
 enum AI {
+#if canImport(UIKit)
+    @MainActor static var isAvailable: Bool { margin_llm_supported() && (ModelDownloads.shared.isInstalled(.writing) || ModelFile.writing.isInstalled) }
+#else
     static var isAvailable: Bool { margin_llm_supported() && ModelFile.writing.isInstalled }
+#endif
 
     // Each answer's exact shape, enforced while sampling, so a small model can't wander into prose or run on forever.
     private static let stringRule = #"""
-    string ::= "\"" char{0,300} "\""
-    char ::= [^"\\\x7F\x00-\x1F] | "\\" ["\\/nt]
+    string ::= "\"" char* "\""
+    char ::= [^"\\\x7F\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F]{4})
     """#
     private static let cardGrammar = #"""
     root ::= "[" card ("," card){0,14} "]"
@@ -158,8 +201,8 @@ enum AI {
     question ::= "{\"question\":" string ",\"options\":[" string "," string "," string "," string "],\"answer\":" [0-3] "}"
     """# + "\n" + stringRule
     private static let mindMapGrammar = #"""
-    root ::= "[{\"title\":" string ",\"children\":[" branch ("," branch){0,5} "]}]"
-    branch ::= "{\"title\":" string ",\"children\":[" (leaf ("," leaf){0,3})? "]}"
+    root ::= "[{\"title\":" string ",\"children\":[" branch ("," branch){2,5} "]}]"
+    branch ::= "{\"title\":" string ",\"children\":[" leaf ("," leaf){1,3} "]}"
     leaf ::= "{\"title\":" string "}"
     """# + "\n" + stringRule
     private static let mathGrammar = #"""
@@ -193,44 +236,66 @@ enum AI {
     }
 
     /// Long notes don't fit the model at once, so they're condensed piece by piece first.
-    static func digest(_ text: String) async throws -> String {
+    static func digest(_ text: String, using digester: Digester? = nil) async throws -> String {
         guard text.count > chunkCharacters else { return text }
+        let chunks = TextTools.chunks(text, size: chunkCharacters)
         var parts: [String] = []
-        for chunk in TextTools.chunks(text, size: chunkCharacters) {
+        for (i, chunk) in chunks.enumerated() {
             try Task.checkCancellation()
-            parts.append(try await complete(
-                system: "Condense these notes, keeping every key fact, definition and number. Reply with only the condensed notes. \(notesRule)",
-                prompt: "<notes>\n\(chunk)\n</notes>"
-            ))
+            digester?.onProgress(i, chunks.count)
+            if let known = digester?.cached(chunk) {
+                parts.append(known)
+                continue
+            }
+            let condensed = try await condense(chunk)
+            digester?.store(condensed, for: chunk)
+            parts.append(condensed)
         }
         let joined = parts.joined(separator: "\n\n")
-        return joined.count > chunkCharacters ? try await digest(joined) : joined
+        return joined.count > chunkCharacters ? try await digest(joined, using: digester) : joined
     }
 
-    static func summary(of text: String, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
-        let notes = try await digest(text)
+    private static func condense(_ chunk: String) async throws -> String {
+        do {
+            return try await complete(
+                system: "Condense these notes, keeping every key fact, definition and number. Reply with only the condensed notes. \(notesRule)",
+                prompt: "<notes>\n\(chunk)\n</notes>"
+            )
+        } catch AIError.tooLong {
+            // Dense text uses more tokens per character than usual, so split it and try again.
+            let half = chunk.index(chunk.startIndex, offsetBy: chunk.count / 2)
+            let first = try await condense(String(chunk[..<half]))
+            let second = try await condense(String(chunk[half...]))
+            return first + "\n" + second
+        }
+    }
+
+    static func summary(of text: String, using digester: Digester? = nil, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
+        let notes = try await digest(text, using: digester)
         return try await complete(system: "Summarize study notes as short, clear bullet points grouped by topic. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
     }
 
-    static func flashcards(from text: String, count: Int = 10) async throws -> [(front: String, back: String)] {
+    static func flashcards(from text: String, count: Int = 10, using digester: Digester? = nil) async throws -> [(front: String, back: String)] {
         struct Card: Decodable { let front, back: String }
-        let notes = try await digest(text)
+        let notes = try await digest(text, using: digester)
         let cards = try await json([Card].self, grammar: cardGrammar,
             system: "Write flashcards that test understanding, one idea per card. Reply with a JSON array of objects with string fields \"front\" and \"back\". \(notesRule)",
             prompt: "Make up to \(count) flashcards.\n<notes>\n\(notes)\n</notes>", maxTokens: 1500)
         return cards.map { ($0.front, $0.back) }
     }
 
-    static func quiz(from text: String, count: Int = 5) async throws -> [QuizQuestion] {
-        let notes = try await digest(text)
+    static func quiz(from text: String, count: Int = 5, using digester: Digester? = nil) async throws -> [QuizQuestion] {
+        let notes = try await digest(text, using: digester)
         let questions = try await json([QuizQuestion].self, grammar: quizGrammar,
             system: "Write a multiple-choice exam on the material. Reply with a JSON array of objects: \"question\" (string), \"options\" (array of 4 strings), \"answer\" (0-based index of the correct option). \(notesRule)",
             prompt: "Write \(count) questions.\n<notes>\n\(notes)\n</notes>", maxTokens: 1800)
-        return questions.filter { $0.options.indices.contains($0.answer) }
+        return questions.filter { $0.options.indices.contains($0.answer) }.map {
+            QuizQuestion(question: $0.question, options: $0.options.map(TextTools.withoutOptionLabel), answer: $0.answer)
+        }
     }
 
-    static func mindMap(from text: String) async throws -> MindNode {
-        let notes = try await digest(text)
+    static func mindMap(from text: String, using digester: Digester? = nil) async throws -> MindNode {
+        let notes = try await digest(text, using: digester)
         let nodes = try await json([MindNode].self, grammar: mindMapGrammar,
             system: "Organize the material as a mind map. Reply with a JSON array holding one object: \"title\" (the main topic, under 5 words) and \"children\" (3 to 6 objects, each with \"title\" and its own \"children\" of up to 4 objects with just \"title\"). \(notesRule)",
             prompt: "<notes>\n\(notes)\n</notes>", maxTokens: 900)
@@ -238,8 +303,8 @@ enum AI {
         return root
     }
 
-    static func finishNotes(notes: String, transcript: String, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
-        let shortNotes = try await digest(notes), shortTranscript = try await digest(transcript)
+    static func finishNotes(notes: String, transcript: String, using digester: Digester? = nil, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
+        let shortNotes = try await digest(notes, using: digester), shortTranscript = try await digest(transcript, using: digester)
         return try await complete(
             system: "The user took notes while listening. Using the transcript, write only what their notes missed: key points, definitions and examples, as short bullets under headings. Don't repeat what they already wrote. \(notesRule)",
             prompt: "<notes>\n\(shortNotes)\n</notes>\n\n<transcript>\n\(shortTranscript)\n</transcript>",
@@ -255,9 +320,9 @@ enum AI {
         )
     }
 
-    static func chatSystem(context: String) async throws -> String {
-        let notes = try await digest(context)
-        return "You answer questions about the user's notes, using them first and saying plainly when the answer isn't in them. Be concise. \(notesRule)\n\n<notes>\n\(notes)\n</notes>"
+    /// `context` is the handful of passages picked for the question, labelled so answers can name their page.
+    static func chatSystem(context: String) -> String {
+        "You answer questions using the passages from the user's notes. Say which page an answer comes from when a page is given, and say plainly when the answer isn't in them. Be concise. \(notesRule)\n\n<notes>\n\(context)\n</notes>"
     }
 
     static func translate(_ text: String, to language: String) async throws -> String {
@@ -268,13 +333,14 @@ enum AI {
     static func math(fromRecognized text: String) async throws -> (unicode: String, latex: String) {
         struct Math: Decodable { let unicode, latex: String }
         let results = try await json([Math].self, grammar: mathGrammar,
-            system: "The text is handwritten math read by imperfect recognition. Work out the intended expression. Reply with a JSON array holding one object: \"unicode\" (the math as plain Unicode text, using characters such as ², √, π, ∫) and \"latex\" (the same math as LaTeX).",
+            system: "The text is handwritten math read by imperfect recognition. Work out the intended expression. Reply with a JSON array holding one object: \"unicode\" (the math as plain Unicode text, using characters such as ², √, π, ∫) and \"latex\" (the same math in LaTeX commands). For example, x2 + 1 gives unicode x² + 1 and latex x^{2} + 1, and sqrt(a)/2 gives unicode √a / 2 and latex \\\\frac{\\\\sqrt{a}}{2}.",
             prompt: text, maxTokens: 300)
         guard let math = results.first else { throw AIError.badResponse }
         return (math.unicode, math.latex)
     }
 
     static func solve(_ text: String) async throws -> String {
-        try await complete(system: "Solve the math, which was read from handwriting by imperfect recognition. Reply with only the final answer in plain Unicode text.", prompt: text, maxTokens: 200)
+        let raw = try await complete(system: "Solve the math, which was read from handwriting by imperfect recognition. Reply with only the final answer in plain Unicode text. Do not include any explanations, working, steps, or markdown.", prompt: text, maxTokens: 100)
+        return TextTools.cleanMathAnswer(raw)
     }
 }

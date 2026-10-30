@@ -102,6 +102,12 @@ struct AssistantSheet: View {
         var id: String { rawValue }
     }
     @State private var tab = Tab.cards
+    @State private var wholeNote = true
+    @State private var fromPage = 1
+    @State private var toPage = 1
+
+    private var isLong: Bool { model.note.pages.count > 30 }
+    private var range: ClosedRange<Int>? { wholeNote ? nil : min(fromPage, toPage)...max(fromPage, toPage) }
 
     var body: some View {
         NavigationStack {
@@ -111,26 +117,31 @@ struct AssistantSheet: View {
                 }
                 .pickerStyle(.segmented)
                 .padding()
+                if tab != .chat, tab != .finish, model.note.pages.count > 1 { scopeBar }
+                if let progress = model.aiProgress {
+                    Text(progress).font(.footnote).foregroundStyle(.secondary).padding(.horizontal).padding(.bottom, 6)
+                }
                 if !AI.isAvailable, tab != .cards {
                     ModelPrompt(file: .writing)
                 } else {
                     switch tab {
                     case .summary:
-                        GeneratedText(button: "Summarize This Note", insertInto: model) { partial in
-                            try await AI.summary(of: try await nonEmptyText(), onPartial: partial)
+                        GeneratedText(button: "Summarize", insertInto: model) { partial in
+                            try await AI.summary(of: try await nonEmptyText(), using: model.digester(), onPartial: partial)
                         }
                     case .chat:
-                        ChatView { _ in await model.fullText() }
+                        ChatView { question in await model.chatContext(for: question) }
                     case .cards:
-                        CardsView(model: model)
+                        CardsView(model: model, text: { try await nonEmptyText() })
                     case .quiz:
-                        QuizView { try await AI.quiz(from: try await nonEmptyText()) }
+                        QuizView { try await AI.quiz(from: try await nonEmptyText(), using: model.digester()) }
                     case .map:
-                        MindMapView(model: model) { try await AI.mindMap(from: try await nonEmptyText()) }
+                        MindMapView(model: model) { try await AI.mindMap(from: try await nonEmptyText(), using: model.digester()) }
                     case .finish:
                         GeneratedText(button: "Fill In What I Missed", insertInto: model) { partial in
                             guard !model.transcriptText.isEmpty else { throw StudyError.noTranscript }
-                            return try await AI.finishNotes(notes: await model.fullText(), transcript: model.transcriptText, onPartial: partial)
+                            let notes = await model.studyText(pages: nil)
+                            return try await AI.finishNotes(notes: notes, transcript: model.transcriptText, using: model.digester(), onPartial: partial)
                         }
                     }
                 }
@@ -138,11 +149,41 @@ struct AssistantSheet: View {
             .navigationTitle("Study")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .onAppear {
+                // A whole book takes many minutes, so a long note starts on the pages in front of you.
+                wholeNote = !isLong
+                fromPage = model.currentPage
+                toPage = min(model.currentPage + 9, model.note.pages.count)
+            }
+            .onChange(of: tab) { model.aiProgress = nil }
+            .onDisappear { model.aiProgress = nil }
         }
     }
 
+    private var scopeBar: some View {
+        HStack(spacing: 12) {
+            Picker("Use", selection: $wholeNote) {
+                Text("Pages").tag(false)
+                Text("Whole Note").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 220)
+            if wholeNote {
+                if isLong {
+                    Text("\(model.note.pages.count) pages can take a long time.").font(.footnote).foregroundStyle(.secondary)
+                }
+            } else {
+                Stepper("From \(fromPage)", value: $fromPage, in: 1...model.note.pages.count).fixedSize()
+                Stepper("To \(toPage)", value: $toPage, in: 1...model.note.pages.count).fixedSize()
+            }
+            Spacer()
+        }
+        .padding(.horizontal)
+        .padding(.bottom, 8)
+    }
+
     private func nonEmptyText() async throws -> String {
-        let text = await model.fullText()
+        let text = await model.studyText(pages: range)
         guard !text.isEmpty else { throw StudyError.emptyNote }
         return text
     }
@@ -155,14 +196,19 @@ struct GeneratedText: View {
     @State private var text = ""
     @State private var working = false
     @State private var error: String?
+    @State private var task: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Button(button) { run() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(working)
-                if working { ProgressView() }
+                if working {
+                    HStack {
+                        ProgressView()
+                        Button("Stop", role: .destructive) { task?.cancel() }
+                    }
+                } else {
+                    Button(button) { run() }.buttonStyle(.borderedProminent)
+                }
                 if let error { Text(error).foregroundStyle(.red) }
                 if !text.isEmpty {
                     Text(text).textSelection(.enabled)
@@ -175,12 +221,13 @@ struct GeneratedText: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
+        .onDisappear { task?.cancel() }
     }
 
     private func run() {
         working = true
         error = nil
-        Task {
+        task = Task {
             defer { working = false }
             do {
                 let result = try await generate { partial in
@@ -188,7 +235,7 @@ struct GeneratedText: View {
                 }
                 text = result
             } catch is CancellationError {
-                self.error = "Stopped because Margin left the screen. Try again."
+                self.error = "Stopped."
             } catch {
                 self.error = error.localizedDescription
             }
@@ -209,7 +256,7 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         if messages.isEmpty {
-                            Text("Ask anything about your notes.").foregroundStyle(.secondary)
+                            Text("Ask anything. Margin finds the right pages first, so this works on long books too.").foregroundStyle(.secondary)
                         }
                         ForEach(Array(messages.enumerated()), id: \.offset) { i, message in
                             Text(message.text)
@@ -252,8 +299,8 @@ struct ChatView: View {
         Task {
             defer { working = false }
             do {
-                let system = try await AI.chatSystem(context: await context(question))
-                let asked = messages
+                let system = AI.chatSystem(context: await context(question))
+                let asked = Array(messages.suffix(5)) // recent turns are enough, and leave room for the notes
                 messages.append(("assistant", ""))
                 let last = messages.count - 1
                 let answer = try await AI.complete(system: system, messages: asked) { partial in
@@ -261,7 +308,7 @@ struct ChatView: View {
                 }
                 messages[last].text = answer
             } catch {
-                self.error = error.localizedDescription
+                self.error = error is CancellationError ? "Stopped." : error.localizedDescription
                 messages.removeLast(messages.last?.text.isEmpty == true && messages.last?.role == "assistant" ? 2 : 1)
             }
         }
@@ -270,6 +317,7 @@ struct ChatView: View {
 
 struct CardsView: View {
     @Bindable var model: EditorModel
+    let text: () async throws -> String
     @State private var working = false
     @State private var error: String?
     @State private var front = ""
@@ -330,9 +378,7 @@ struct CardsView: View {
         Task {
             defer { working = false }
             do {
-                let text = await model.fullText()
-                guard !text.isEmpty else { throw StudyError.emptyNote }
-                let cards = try await AI.flashcards(from: text)
+                let cards = try await AI.flashcards(from: try await text(), using: model.digester())
                 model.note.flashcards += cards.map { Flashcard(front: $0.front, back: $0.back) }
                 model.scheduleSave()
             } catch is CancellationError {

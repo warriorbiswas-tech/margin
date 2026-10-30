@@ -134,4 +134,19 @@ let cut = TextTools.quietCut(audio, searchingLast: 8000)
 check(cut > 12000 && cut <= 12640, "cuts in the pause")
 check(TextTools.quietCut([0.1, 0.2], searchingLast: 100) == 2, "too short to search")
 
+check(TextTools.cleanMathAnswer("42") == "42", "plain number answer")
+check(TextTools.cleanMathAnswer("The answer is:\n\nFinal answer: `9`") == "9", "extracts final answer with backticks")
+check(TextTools.cleanMathAnswer("$$\n\\int 2x dx = 9\n$$\nFinal Answer: 9") == "9", "extracts final answer from math explanation")
+
+// Finding the right pages in a long document
+let book = ["Intro to the course", "Mitosis divides cells. Mitosis has stages.", "", "Photosynthesis in plants", "More on mitosis"]
+let found = TextTools.bestPassages(query: "what is mitosis", passages: book, limit: 60)
+check(found.first == 1 && found.contains(4) && !found.contains(3), "picks the matching pages, best first")
+check(!TextTools.bestPassages(query: "zebra", passages: book, limit: 20).isEmpty, "no match still gives something to read")
+check(!TextTools.bestPassages(query: "zebra", passages: book, limit: 1000).contains(2), "empty pages are skipped")
+check(TextTools.bestPassages(query: "x", passages: [], limit: 10).isEmpty, "no pages, no passages")
+check(TextTools.bestPassages(query: "mitosis", passages: [String(repeating: "mitosis ", count: 100)], limit: 10) == [0], "the best page is kept even if it's over the limit")
+check(TextTools.withoutOptionLabel("A. Paris") == "Paris" && TextTools.withoutOptionLabel("B) Rome") == "Rome", "option labels come off")
+check(TextTools.withoutOptionLabel("Paris") == "Paris", "plain options stay")
+
 print("ok")

@@ -351,6 +351,38 @@ enum TranscriptGroup {
 }
 
 enum TextTools {
+    /// The passages most likely to answer a question, up to `limit` characters, best first.
+    /// Falls back to the opening passages when no words match, so a broad question still gets an answer.
+    static func bestPassages(query: String, passages: [String], limit: Int) -> [Int] {
+        let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count > 2 })
+        let scored: [(index: Int, score: Int)] = passages.enumerated().compactMap { i, passage in
+            guard !passage.isEmpty else { return nil }
+            let text = passage.lowercased()
+            let hits = words.reduce(0) { total, word in
+                guard text.contains(word) else { return total }
+                return total + 100 + min(text.components(separatedBy: word).count - 1, 20)
+            }
+            return (i, hits)
+        }
+        let ranked = scored.sorted { $0.score != $1.score ? $0.score > $1.score : $0.index < $1.index }
+        var chosen: [Int] = [], used = 0
+        for item in ranked {
+            let size = passages[item.index].count
+            if !chosen.isEmpty, used + size > limit { continue }
+            chosen.append(item.index)
+            used += size
+            if used >= limit { break }
+        }
+        return chosen
+    }
+
+    /// Models often write "A. Paris" even though the option's position already says which it is.
+    static func withoutOptionLabel(_ option: String) -> String {
+        let trimmed = option.trimmingCharacters(in: .whitespaces)
+        guard let first = trimmed.first, first.isLetter, first.isUppercase, trimmed.dropFirst().first == "." || trimmed.dropFirst().first == ")" else { return trimmed }
+        return trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
+    }
+
     /// Drops the reasoning block this model family can open with, finished or still being written.
     static func visibleAnswer(_ raw: String) -> String {
         var text = raw.replacingOccurrences(of: "\u{FFFD}", with: "")
@@ -407,6 +439,22 @@ enum TextTools {
     static func jsonArray(in text: String) -> Data? {
         guard let a = text.firstIndex(of: "["), let b = text.lastIndex(of: "]"), a < b else { return nil }
         return String(text[a...b]).data(using: .utf8)
+    }
+
+    /// Extracts the concise final answer from a calculation response, stripping explanations and markdown.
+    static func cleanMathAnswer(_ raw: String) -> String {
+        var text = visibleAnswer(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+        if let match = text.range(of: "(?i)final answer:?\\s*", options: .regularExpression) {
+            text = String(text[match.upperBound...])
+        } else if let match = text.range(of: "(?i)answer:?\\s*", options: .regularExpression) {
+            text = String(text[match.upperBound...])
+        }
+        let lines = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if let last = lines.last {
+            text = last
+        }
+        text = text.trimmingCharacters(in: CharacterSet(charactersIn: "`*$= \t\n\r"))
+        return text
     }
 
     static func score(query: String, in text: String) -> Int {

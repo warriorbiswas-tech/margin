@@ -17,6 +17,10 @@ import UIKit
         completion(boxes + [Self.newBox])
     }
 
+    func indirectScribbleInteraction(_ interaction: UIInteraction, willBeginWritingInElement elementIdentifier: String) {
+        model?.scribbleConfirmed = true
+    }
+
     func indirectScribbleInteraction(_ interaction: UIInteraction, isElementFocused elementIdentifier: String) -> Bool {
         model?.editingElementID?.uuidString == elementIdentifier
     }

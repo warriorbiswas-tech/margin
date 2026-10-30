@@ -200,17 +200,13 @@ final class Library {
     }
 
     func context(for question: String) -> String {
-        notes.filter { $0.deletedAt == nil }
-            .map { note -> (Note, String, Int) in
-                let spoken = note.recordings.flatMap { $0.transcript ?? [] }.map(\.text).joined(separator: " ")
-                let body = ([note.searchText, spoken] + note.elements.map(\.text)).joined(separator: "\n")
-                return (note, body, TextTools.score(query: question, in: note.title + " " + body))
-            }
-            .filter { $0.2 > 0 }
-            .sorted { $0.2 > $1.2 }
-            .prefix(8)
-            .map { "# \($0.0.title)\n\($0.1)" }
-            .joined(separator: "\n\n")
+        var passages: [String] = []
+        for note in notes where note.deletedAt == nil && !note.locked {
+            let spoken = note.recordings.flatMap { $0.transcript ?? [] }.map(\.text).joined(separator: " ")
+            let body = ([note.searchText, spoken] + note.elements.map(\.text)).filter { !$0.isEmpty }.joined(separator: "\n")
+            for chunk in TextTools.chunks(body, size: 3000) { passages.append("From \"\(note.title)\":\n\(chunk)") }
+        }
+        return TextTools.bestPassages(query: question, passages: passages, limit: 12000).map { passages[$0] }.joined(separator: "\n\n")
     }
 
     // MARK: Versions

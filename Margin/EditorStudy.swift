@@ -249,7 +249,7 @@ extension EditorModel {
             return
         }
         Task {
-            let text = await fullText()
+            let text = await studyText(pages: nil)
             guard !text.isEmpty else {
                 message = "There's nothing in this note to read yet."
                 return
@@ -366,7 +366,8 @@ extension EditorModel {
             let sameLine = abs(rect.midY - tail.rect.midY) < max(tail.rect.height, rect.height) * 0.7
             let textEnd = tail.rect.minX + (Renderer.attributed(tail).size().width)
             if sameLine, rect.minX >= tail.rect.minX, rect.minX - textEnd < tail.fontSize * 4 {
-                note.elements[i].text += " " + text
+                // A pause mid-word arrives as a piece right beside the last one, so only a real gap gets a space.
+                note.elements[i].text += (rect.minX - textEnd < tail.fontSize * 0.3 ? "" : " ") + text
                 let width = Renderer.attributed(note.elements[i]).size().width + tail.fontSize
                 note.elements[i].rect.size.width = min(max(width, tail.rect.width), NoteLayout.width - tail.rect.minX)
                 note.elements[i].rect.size.height = Renderer.textHeight(note.elements[i])
@@ -398,7 +399,7 @@ extension EditorModel {
         guard liveText, tool == .pen, !snapShapes, playing == nil else { return }
         liveTask?.cancel()
         liveTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(800))
+            try? await Task.sleep(for: .milliseconds(1000))
             guard !Task.isCancelled else { return }
             await self?.convertLiveInk()
         }

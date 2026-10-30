@@ -16,7 +16,7 @@ func attempt(_ name: String, _ work: () async throws -> String) async {
 }
 
 setvbuf(stdout, nil, _IOLBF, 0)
-var failures = 0
+nonisolated(unsafe) var failures = 0
 let arguments = CommandLine.arguments
 ModelFile.directory = URL(fileURLWithPath: arguments[1])
 let notes = """
@@ -49,15 +49,15 @@ await attempt("mind map") {
     return "\(root.title): \((root.children ?? []).map(\.title))"
 }
 await attempt("chat") {
-    let system = try await AI.chatSystem(context: notes)
+    let system = AI.chatSystem(context: notes)
     return try await AI.complete(system: system, messages: [("user", "How many cells does meiosis produce?")])
 }
 await attempt("chat follow-up") {
-    let system = try await AI.chatSystem(context: notes)
+    let system = AI.chatSystem(context: notes)
     return try await AI.complete(system: system, messages: [("user", "How many cells does meiosis produce?"), ("assistant", "Four."), ("user", "And mitosis?")])
 }
 await attempt("not in notes") {
-    let system = try await AI.chatSystem(context: notes)
+    let system = AI.chatSystem(context: notes)
     return try await AI.complete(system: system, messages: [("user", "Who won the 2018 World Cup according to my notes?")])
 }
 await attempt("math") {
@@ -94,6 +94,7 @@ await attempt("cancel mid-answer") {
 await attempt("works after cancel") { try await AI.complete(system: "Reply with one word.", prompt: "What color is the sky?", maxTokens: 40) }
 LocalLLM.shared.unload()
 await attempt("reload after unload") { try await AI.complete(system: "Reply with one word.", prompt: "What is 2+2?", maxTokens: 40) }
+LocalLLM.shared.unload()
 
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

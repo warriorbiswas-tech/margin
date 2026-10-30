@@ -342,11 +342,11 @@ enum Renderer {
 
     static func recognizeLines(_ image: UIImage) -> [RecognizedLine] {
         guard let cg = image.cgImage else { return [] }
-        // Language correction discards very short words, so a blank first pass gets a second try without it.
-        for correction in [true, false] {
+        // Accurate reads sentences best but returns nothing for very short words, which the fast level can read.
+        for level in [VNRequestTextRecognitionLevel.accurate, .fast] {
             let request = VNRecognizeTextRequest()
-            request.recognitionLevel = .accurate
-            request.usesLanguageCorrection = correction
+            request.recognitionLevel = level
+            request.usesLanguageCorrection = level == .accurate
             try? VNImageRequestHandler(cgImage: cg).perform([request])
             let lines = (request.results ?? []).compactMap { observation in
                 observation.topCandidates(1).first.map { RecognizedLine(text: $0.string, confidence: $0.confidence, box: observation.boundingBox) }

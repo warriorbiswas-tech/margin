@@ -46,6 +46,7 @@ final class ModelDownloads: NSObject {
     }
 
     func state(of file: ModelFile) -> State { states[file.name] ?? .absent }
+    func isInstalled(_ file: ModelFile) -> Bool { states[file.name] == .installed || file.isInstalled }
 
     func download(_ file: ModelFile) {
         let task = session.downloadTask(with: file.url)

@@ -13,6 +13,9 @@ struct MarginApp: App {
                 .onChange(of: scenePhase) { _, phase in
                     LocalLLM.shared.setInBackground(phase == .background)
                 }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                    LocalLLM.shared.unload()
+                }
         }
     }
 }

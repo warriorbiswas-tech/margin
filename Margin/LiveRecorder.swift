@@ -14,7 +14,11 @@ final class LocalWhisper: @unchecked Sendable {
         init(offset: TimeInterval) { self.offset = offset }
     }
 
+#if canImport(UIKit)
+    @MainActor static var isAvailable: Bool { margin_whisper_supported() && (ModelDownloads.shared.isInstalled(.speech) || ModelFile.speech.isInstalled) }
+#else
     static var isAvailable: Bool { margin_whisper_supported() && ModelFile.speech.isInstalled }
+#endif
 
     func transcribe(_ samples: [Float], offset: TimeInterval) async throws -> [TranscriptLine] {
         try await withCheckedThrowingContinuation { continuation in

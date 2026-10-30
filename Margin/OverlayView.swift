@@ -10,6 +10,13 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         g.maximumNumberOfTouches = 1 // two fingers always scroll
         return g
     }()
+    private lazy var pencilWatch: UIPanGestureRecognizer = {
+        let g = UIPanGestureRecognizer(target: self, action: #selector(onPencilWatch))
+        g.allowedTouchTypes = [UITouch.TouchType.pencil.rawValue as NSNumber]
+        g.cancelsTouchesInView = false
+        g.delegate = self
+        return g
+    }()
     private let outline = UIView()
     private let handle = UIView()
     private let regionLayer = CAShapeLayer()
@@ -27,6 +34,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         backgroundColor = .clear
         addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(onTap)))
         addGestureRecognizer(pan)
+        addGestureRecognizer(pencilWatch)
         addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(onLongPress)))
         outline.isUserInteractionEnabled = false
         outline.layer.borderColor = UIColor.systemBlue.cgColor
@@ -140,6 +148,14 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         guard g.state == .began, let model, model.tool == .tape || model.tool == .annotate, let el = element(at: g.location(in: self)) else { return }
         model.registerStateUndo()
         model.removeElement(el.id)
+    }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        g === pencilWatch || other === pencilWatch
+    }
+
+    @objc private func onPencilWatch(_ g: UIPanGestureRecognizer) {
+        if g.state == .ended { model?.pencilStrokeEnded() }
     }
 
     override func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {

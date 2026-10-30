@@ -134,9 +134,16 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
     var liveText = UserDefaults.standard.bool(forKey: "liveText") {
         didSet {
             UserDefaults.standard.set(liveText, forKey: "liveText")
-            liveSince = Date()
-            liveTailID = nil
+            scribbleUnavailable = false
             applyTool()
+            applyDrawingPolicy()
+            if liveText {
+                liveSince = max(Date(), canvas.drawing.strokes.map(\.path.creationDate).max() ?? .distantPast)
+                liveTailID = nil
+                scheduleLiveText()
+            } else {
+                liveTask?.cancel()
+            }
         }
     }
     var liveFont = UserDefaults.standard.string(forKey: "liveFont") ?? "sans" {
@@ -146,9 +153,13 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         didSet { UserDefaults.standard.set(liveSize, forKey: "liveSize") }
     }
     @ObservationIgnored let liveScribble = LiveScribble()
+    @ObservationIgnored var scribbleConfirmed = false
+    var scribbleUnavailable = false
 
-    /// Pencil writing goes to Scribble. Finger writing can't, so it stays ink and is read from the page.
-    var scribbleActive: Bool { liveText && tool == .pen && !fingerDrawing && playing == nil }
+    /// Scribble reads the pen's motion, which is far more accurate than reading a picture of the ink, but it only works with a Pencil.
+    var scribbleActive: Bool { liveText && tool == .pen && !fingerDrawing && !scribbleUnavailable && playing == nil }
+    var aiProgress: String?
+    @ObservationIgnored var printedPages: [String]?
     @ObservationIgnored var liveSince = Date()
     @ObservationIgnored var liveTask: Task<Void, Never>?
     @ObservationIgnored var liveTailID: UUID?
@@ -414,6 +425,10 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         canvas.drawingGestureRecognizer.isEnabled = inking
         zoomCanvas.drawingGestureRecognizer.isEnabled = inking
         overlay.isUserInteractionEnabled = !inking
+        // While writing to Scribble, a Pencil must write rather than scroll the page.
+        canvas.panGestureRecognizer.allowedTouchTypes = scribbleActive
+            ? [UITouch.TouchType.direct.rawValue as NSNumber]
+            : [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber, UITouch.TouchType.indirectPointer.rawValue as NSNumber]
         if tool != .text, !scribbleActive {
             overlay.commitEditing()
             selectedElementID = nil
@@ -515,10 +530,23 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         return true
     }
 
-    /// A finger always reports a flat altitude, so a tilted point means a Pencil. Live Text then moves to Scribble, which only a Pencil can use.
+    /// A finger always reports a flat altitude, so a tilted point means a Pencil, and Live Text can move to Scribble.
     private func noticePencil(_ stroke: PKStroke) {
         guard liveText, fingerDrawing, let point = stroke.path.first, point.altitude < .pi / 2 - 0.05 else { return }
         fingerDrawing = false
+    }
+
+    /// Scribble can be off in Settings, or unavailable for the keyboard language. A Pencil stroke
+    /// it never picked up would otherwise vanish, so that one stroke switches Live Text back to ink.
+    func pencilStrokeEnded() {
+        guard scribbleActive, !scribbleConfirmed else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
+            guard scribbleActive, !scribbleConfirmed else { return }
+            scribbleUnavailable = true
+            liveSince = Date()
+            applyTool()
+            message = "Scribble didn't respond, so Live Text is reading your ink instead, which is less accurate. To fix this, turn on Scribble in iPad Settings › Apple Pencil, then turn Live Text off and on."
+        }
     }
 
     private func snap(_ stroke: PKStroke) {
@@ -608,6 +636,7 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         // Repaint existing PDF pages against the reloaded document.
         pageViews.values.forEach { $0.contentKey = nil }
         inkChanged = true
+        printedPages = nil
         setPages(note.pages + pages)
     }
 
@@ -790,15 +819,58 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         }
     }
 
-    func fullText() async -> String {
-        let drawing = currentDrawing, rects = Renderer.rects(for: note)
-        let ink = await Task.detached { rects.map { Renderer.recognizeInk(drawing, rect: $0) }.joined(separator: "\n") }.value
-        let typed = note.elements.filter { !$0.isTape && $0.comment == nil }.map(\.text).joined(separator: "\n")
-        let comments = note.elements.compactMap(\.comment).joined(separator: "\n")
-        let spoken = transcriptText
-        let pdfURL = library.pdfURL(note.id), library = library
-        let pdfText = await Task.detached { PDFDocument(url: pdfURL).map(library.pdfText) ?? "" }.value
-        return [typed, comments, ink, spoken, pdfText].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    /// One string per page, for the assistant. A PDF's printed text is read once and kept, since a long book takes seconds to read.
+    func studyPages() async -> [String] {
+        if printedPages == nil {
+            let url = library.pdfURL(note.id), pages = note.pages
+            printedPages = await Task.detached(priority: .userInitiated) {
+                let doc = PDFDocument(url: url)
+                return pages.map { page in page.pdfPage.flatMap { doc?.page(at: $0)?.string } ?? "" }
+            }.value
+        }
+        let printed = printedPages ?? []
+        let note = note, drawing = currentDrawing
+        return await Task.detached(priority: .userInitiated) {
+            let rects = Renderer.rects(for: note)
+            return note.pages.indices.map { i in
+                let ink = Renderer.recognizeInk(drawing, rect: rects[i])
+                let typed = note.elements.filter { !$0.isTape && $0.rect.intersects(rects[i]) }.map { $0.comment ?? $0.text }.filter { $0 != "" }
+                return ([i < printed.count ? printed[i] : "", ink] + typed).filter { !$0.isEmpty }.joined(separator: "\n")
+            }
+        }.value
+    }
+
+    /// The text of a page range, 1-based and inclusive. With no range, the whole note and any transcripts.
+    func studyText(pages range: ClosedRange<Int>?) async -> String {
+        let pages = await studyPages()
+        guard let range else {
+            return (pages + [transcriptText]).filter { !$0.isEmpty }.joined(separator: "\n\n")
+        }
+        let low = max(range.lowerBound, 1) - 1, high = min(range.upperBound, pages.count) - 1
+        guard low <= high else { return "" }
+        return pages[low...high].filter { !$0.isEmpty }.joined(separator: "\n\n")
+    }
+
+    /// The pages most relevant to a question, so a long book can be asked about in seconds.
+    func chatContext(for question: String) async -> String {
+        let pages = await studyPages()
+        var passages: [String] = []
+        for (i, text) in pages.enumerated() {
+            for chunk in TextTools.chunks(text, size: 3000) { passages.append("Page \(i + 1):\n\(chunk)") }
+        }
+        if !transcriptText.isEmpty {
+            for chunk in TextTools.chunks(transcriptText, size: 3000) { passages.append("Recording transcript:\n\(chunk)") }
+        }
+        let chosen = TextTools.bestPassages(query: question, passages: passages, limit: 12000)
+        return chosen.map { passages[$0] }.joined(separator: "\n\n")
+    }
+
+    func digester() -> Digester {
+        Digester(cacheURL: library.dir(note.id).appendingPathComponent("digest-cache.json")) { [weak self] done, total in
+            DispatchQueue.main.async {
+                self?.aiProgress = "Reading part \(done + 1) of \(total). You can stop anytime; this work is kept."
+            }
+        }
     }
 
     var transcriptText: String {
