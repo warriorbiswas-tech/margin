@@ -92,7 +92,9 @@ final class LocalLLM: @unchecked Sendable {
     }
 
     func generate(messages: [(role: String, text: String)], maxTokens: Int32, grammar: String?, onPartial: (@Sendable (String) -> Void)?) async throws -> String {
-        guard ModelFile.writing.isInstalled, margin_llm_supported() else { throw AIError.notInstalled }
+        guard ModelFile.writing.isInstalled, margin_llm_supported() else {
+            throw AIError.notInstalled
+        }
         let run = Run(onPartial: onPartial)
         guard stateLock.withLock({ !inBackground }) else { throw CancellationError() }
         return try await withTaskCancellationHandler {
@@ -117,7 +119,9 @@ final class LocalLLM: @unchecked Sendable {
             let threads = Int32(max(ProcessInfo.processInfo.activeProcessorCount - 2, 2))
             handle = margin_llm_open(ModelFile.writing.path.path, Self.contextTokens, threads)
         }
-        guard let handle else { throw AIError.failed }
+        guard let handle else {
+            throw AIError.failed
+        }
 
         let roles = messages.map { strdup($0.role) }, contents = messages.map { strdup($0.text) }
         defer {

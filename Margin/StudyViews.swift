@@ -155,7 +155,9 @@ struct AssistantSheet: View {
                 fromPage = model.currentPage
                 toPage = min(model.currentPage + 9, model.note.pages.count)
             }
-            .onChange(of: tab) { model.aiProgress = nil }
+            .onChange(of: tab) {
+                model.aiProgress = nil
+            }
             .onDisappear { model.aiProgress = nil }
         }
     }

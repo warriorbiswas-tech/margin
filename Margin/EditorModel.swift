@@ -154,6 +154,10 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
     }
     @ObservationIgnored let liveScribble = LiveScribble()
     @ObservationIgnored var scribbleConfirmed = false
+    @ObservationIgnored var eraserTrailPoint: CGPoint?
+    @ObservationIgnored var eraserUndoRegistered = false
+    @ObservationIgnored var freshScribbleBoxID: UUID?
+    @ObservationIgnored var lastPencilActivity = Date.distantPast
     var scribbleUnavailable = false
 
     /// Scribble reads the pen's motion, which is far more accurate than reading a picture of the ink, but it only works with a Pencil.
@@ -181,6 +185,8 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
     var penColor = UIColor(hex: UserDefaults.standard.string(forKey: "penColor") ?? "1C1C1E") { didSet { applyTool() } }
     var penWidth = UserDefaults.standard.object(forKey: "penWidth") as? CGFloat ?? 3 { didSet { applyTool() } }
     var highlightColor = UIColor(hex: UserDefaults.standard.string(forKey: "highlightColor") ?? "FFD60A") { didSet { applyTool() } }
+    /// Ink sits above the page on its own layer, so only transparency lets the text show through a highlight.
+    var highlightInk: UIColor { highlightColor.withAlphaComponent(0.4) }
     var highlightWidth = UserDefaults.standard.object(forKey: "highlightWidth") as? CGFloat ?? 20 { didSet { applyTool() } }
     var eraseWholeStroke = false { didSet { applyTool() } }
     var snapShapes = false
@@ -269,6 +275,9 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         overlay.model = self
         canvas.panGestureRecognizer.require(toFail: overlay.pan)
         liveScribble.model = self
+        let trail = TouchTrail(target: nil, action: nil)
+        trail.onTouch = { [weak self] touch, began in self?.eraserTouch(touch, began: began) }
+        canvas.addGestureRecognizer(trail)
         overlay.addInteraction(UIIndirectScribbleInteraction(delegate: liveScribble))
         configureZoomCanvas()
         let fingerTap = UITapGestureRecognizer(target: self, action: #selector(fingerTapped))
@@ -436,7 +445,7 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         if tool != .region { regionRect = nil }
         switch tool {
         case .pen: canvas.tool = PKInkingTool(penStyle.ink, color: penColor, width: penWidth)
-        case .highlighter: canvas.tool = PKInkingTool(.marker, color: highlightColor, width: highlightWidth)
+        case .highlighter: canvas.tool = PKInkingTool(.marker, color: highlightInk, width: highlightWidth)
         case .eraser: canvas.tool = PKEraserTool(eraseWholeStroke ? .vector : .bitmap)
         case .lasso: canvas.tool = PKLassoTool()
         case .text, .region, .annotate, .tape, .laser: break
@@ -539,13 +548,17 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
     /// Scribble can be off in Settings, or unavailable for the keyboard language. A Pencil stroke
     /// it never picked up would otherwise vanish, so that one stroke switches Live Text back to ink.
     func pencilStrokeEnded() {
+        // Once Scribble has picked up any writing it's working. An illegible word isn't a reason to give up on it.
         guard scribbleActive, !scribbleConfirmed else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
-            guard scribbleActive, !scribbleConfirmed else { return }
+        let finished = Date()
+        lastPencilActivity = finished
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [self] in
+            guard scribbleActive, !scribbleConfirmed, lastPencilActivity == finished else { return }
             scribbleUnavailable = true
+            overlay.commitEditing()
             liveSince = Date()
             applyTool()
-            message = "Scribble didn't respond, so Live Text is reading your ink instead, which is less accurate. To fix this, turn on Scribble in iPad Settings › Apple Pencil, then turn Live Text off and on."
+            message = "Scribble didn't turn that into text, so Live Text is reading your ink instead, which is less accurate. Check that Scribble is on in iPad Settings › Apple Pencil, then turn Live Text off and on."
         }
     }
 

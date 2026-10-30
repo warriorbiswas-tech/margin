@@ -49,7 +49,17 @@ final class Library {
 
     func loadDrawing(_ id: UUID) -> PKDrawing {
         guard let data = try? Data(contentsOf: drawingURL(id)) else { return PKDrawing() }
-        return (try? PKDrawing(data: data)) ?? PKDrawing()
+        var drawing = (try? PKDrawing(data: data)) ?? PKDrawing()
+        // Highlights from before they were translucent would hide the text under them.
+        if drawing.strokes.contains(where: { $0.ink.inkType == .marker && $0.ink.color.cgColor.alpha > 0.99 }) {
+            drawing.strokes = drawing.strokes.map { stroke in
+                guard stroke.ink.inkType == .marker, stroke.ink.color.cgColor.alpha > 0.99 else { return stroke }
+                var clear = stroke
+                clear.ink = PKInk(.marker, color: stroke.ink.color.withAlphaComponent(0.4))
+                return clear
+            }
+        }
+        return drawing
     }
 
     // MARK: Notes

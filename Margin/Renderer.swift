@@ -109,13 +109,23 @@ enum Renderer {
             if end < result.endIndex, result[end] == " " { end = result.index(after: end) }
             result.removeSubrange(range.lowerBound..<end)
         }
+        // Stickers aren't words, and leftover punctuation isn't worth keeping.
+        if doomed.isEmpty, !text.contains(where: { $0.isLetter || $0.isNumber }) { return "" }
+        guard result.contains(where: { $0.isLetter || $0.isNumber }) else { return "" }
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Where the box's text stops on the page, horizontally.
+    static func textEnd(_ el: Element) -> CGFloat {
+        let width = attributed(el).boundingRect(with: CGSize(width: el.rect.width - el.inset * 2, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).width
+        return el.rect.minX + el.inset + ceil(width)
     }
 
     static func textHeight(_ el: Element) -> CGFloat {
         let probe = el.text.isEmpty ? NSAttributedString(string: " ", attributes: [.font: font(el)]) : attributed(el)
         let width = el.rect.width - el.inset * 2
-        return ceil(probe.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height) + 2 + el.inset * 2
+        let measured = ceil(probe.boundingRect(with: CGSize(width: width, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height) + 2 + el.inset * 2
+        return el.fillHex == nil ? measured : max(measured, el.rect.height) // a sticky note keeps its size until the text outgrows it
     }
 
     static func drawText(_ el: Element, in box: CGRect, dark: Bool = false, ctx: CGContext) {

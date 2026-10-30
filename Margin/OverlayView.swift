@@ -1,4 +1,31 @@
 import UIKit
+import UIKit.UIGestureRecognizerSubclass
+
+/// Reports where a touch goes without ever claiming it, so the canvas underneath keeps working as normal.
+final class TouchTrail: UIGestureRecognizer, UIGestureRecognizerDelegate {
+    var onTouch: ((UITouch, _ began: Bool) -> Void)?
+
+    override init(target: Any?, action: Selector?) {
+        super.init(target: target, action: action)
+        cancelsTouchesInView = false
+        delaysTouchesBegan = false
+        delaysTouchesEnded = false
+        delegate = self
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let touch = touches.first { onTouch?(touch, true) }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let touch = touches.first { onTouch?(touch, false) }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { state = .failed }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { state = .failed }
+
+    func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+}
 
 /// Sits above the ink and takes touches for every tool that isn't writing, and during playback.
 /// Element views stay below the ink so you can write on top of them; this layer only handles the gestures.
@@ -208,6 +235,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
                 if el.imageFile != nil {
                     el.rect.size.height = el.rect.width * start.height / max(start.width, 1)
                 } else {
+                    if el.fillHex != nil { el.rect.size.height = max(60, start.height + t.y) }
                     el.rect.size.height = Renderer.textHeight(el)
                 }
             }
@@ -335,6 +363,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
 
     func textViewDidChange(_ textView: UITextView) {
         guard let model, let id = model.editingElementID else { return }
+        model.freshScribbleBoxID = nil
         model.updateElement(id) { el in
             el.text = textView.text
             el.rect.size.height = Renderer.textHeight(el)

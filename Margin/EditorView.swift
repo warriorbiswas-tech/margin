@@ -229,9 +229,11 @@ struct EditorView: View {
             commentText = model.note.elements.first { $0.id == id }?.comment ?? ""
         }
         .alert("Comment", isPresented: Binding(get: { model.commentEditingID != nil }, set: { _ in })) {
+            let saved = model.note.elements.first { $0.id == model.commentEditingID }?.comment ?? ""
             TextField("Your comment", text: $commentText, axis: .vertical)
             Button("Save") { model.finishComment(commentText) }
-            Button("Delete", role: .destructive) { model.finishComment("") }
+            if !saved.isEmpty { Button("Delete", role: .destructive) { model.finishComment("") } }
+            Button("Cancel", role: .cancel) { model.finishComment(saved) }
         }
         .alert("Rename Note", isPresented: $renaming) {
             TextField("Title", text: $draftTitle)
@@ -282,6 +284,42 @@ struct EditorView: View {
     }
 
     private var topBar: some View {
+        Group {
+            if model.playing != nil {
+                HStack(spacing: 2) {
+                    titleControls
+                    Spacer(minLength: 4)
+                    Text("Tap your notes to jump to that moment").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer(minLength: 4)
+                    noteControls
+                }
+            } else {
+                // Upright, every tool can't share a row with the note's controls, and none of them should be hidden.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 2) {
+                        titleControls
+                        Spacer(minLength: 4)
+                        tools
+                        Spacer(minLength: 4)
+                        noteControls
+                    }
+                    VStack(spacing: 2) {
+                        HStack(spacing: 2) {
+                            titleControls
+                            Spacer(minLength: 4)
+                            noteControls
+                        }
+                        tools
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.bar)
+    }
+
+    private var titleControls: some View {
         HStack(spacing: 2) {
             IconButton(icon: "chevron.left", label: "Back to library", action: onClose)
             Button {
@@ -292,20 +330,11 @@ struct EditorView: View {
             }
             .buttonStyle(.plain)
             .accessibilityHint("Rename")
+        }
+    }
 
-            Spacer(minLength: 4)
-
-            if model.playing == nil {
-                ViewThatFits(in: .horizontal) {
-                    tools
-                    ScrollView(.horizontal, showsIndicators: false) { tools }
-                }
-            } else {
-                Text("Tap your notes to jump to that moment").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-            }
-
-            Spacer(minLength: 4)
-
+    private var noteControls: some View {
+        HStack(spacing: 2) {
             Menu {
                 Button("Fit Page to Width") { model.setZoom(percent: 100) }
                 ForEach([40, 50, 75, 125, 150, 200, 300, 400], id: \.self) { percent in
@@ -322,9 +351,6 @@ struct EditorView: View {
             IconButton(icon: "square.grid.2x2", label: "Pages") { panel = .pages }
             moreMenu
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-        .background(.bar)
     }
 
     private var insertMenu: some View {
@@ -515,8 +541,12 @@ struct EditorView: View {
                     hint("Point at your page. The trail fades on its own and isn't saved.")
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.leading, 12)
+            .padding(.trailing, 36)
         }
+        .scrollIndicatorsFlash(onAppear: true)
+        // Fading the edge shows there's more to scroll to.
+        .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.95), .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing))
         .frame(height: 44)
         .background(.bar)
     }

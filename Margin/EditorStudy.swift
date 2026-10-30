@@ -6,22 +6,15 @@ import UIKit
 extension EditorModel {
     // MARK: Ink helpers
 
-    func scribbleErase(_ stroke: PKStroke) -> Bool {
-        let strokes = canvas.drawing.strokes
-        guard strokes.last?.path.creationDate == stroke.path.creationDate,
-              Scribble.isScribble(stroke.path.map(\.location)) else { return false }
-        let area = stroke.renderBounds
-        let kept = strokes.dropLast().filter { !$0.renderBounds.intersects(area) }
-        let typed = note.elements.filter {
-            $0.imageFile == nil && !$0.isTape && $0.cover == nil && $0.comment == nil && $0.rect.intersects(area)
+    private func textEdits(crossing area: CGRect) -> [(id: UUID, text: String)] {
+        note.elements.compactMap { el in
+            guard el.imageFile == nil, !el.isTape, el.cover == nil, el.comment == nil, el.rect.intersects(area) else { return nil }
+            let text = Renderer.textRemovingWords(of: el, crossing: area)
+            return text == el.text ? nil : (el.id, text)
         }
-        let edits = typed.map { (id: $0.id, text: Renderer.textRemovingWords(of: $0, crossing: area), old: $0.text) }
-            .filter { $0.text != $0.old }
-        guard kept.count < strokes.count - 1 || !edits.isEmpty else { return false } // covered nothing, so it's just a mark
+    }
 
-        registerStateUndo()
-        lastStrokeCount = kept.count
-        canvas.drawing = PKDrawing(strokes: Array(kept))
+    private func apply(_ edits: [(id: UUID, text: String)]) {
         for edit in edits {
             guard let i = note.elements.firstIndex(where: { $0.id == edit.id }) else { continue }
             if edit.text.isEmpty {
@@ -33,6 +26,44 @@ extension EditorModel {
                 note.elements[i].rect.size.height = Renderer.textHeight(note.elements[i])
             }
         }
+    }
+
+    /// PencilKit's eraser only knows about ink, so typed words under its path are removed here.
+    func eraserTouch(_ touch: UITouch, began: Bool) {
+        guard tool == .eraser, playing == nil, touch.type == .pencil || fingerDrawing else {
+            eraserTrailPoint = nil
+            return
+        }
+        let z = max(canvas.zoomScale, 0.01), location = touch.location(in: canvas)
+        let point = CGPoint(x: location.x / z, y: location.y / z)
+        if began { eraserUndoRegistered = false }
+        let previous = (began ? nil : eraserTrailPoint) ?? point
+        eraserTrailPoint = point
+        let area = CGRect(x: min(previous.x, point.x), y: min(previous.y, point.y), width: abs(previous.x - point.x), height: abs(previous.y - point.y)).insetBy(dx: -6, dy: -6)
+        let edits = textEdits(crossing: area)
+        guard !edits.isEmpty else { return }
+        if !eraserUndoRegistered {
+            registerStateUndo()
+            eraserUndoRegistered = true
+        }
+        apply(edits)
+        syncElements()
+        scheduleSave()
+    }
+
+    func scribbleErase(_ stroke: PKStroke) -> Bool {
+        let strokes = canvas.drawing.strokes
+        guard strokes.last?.path.creationDate == stroke.path.creationDate,
+              Scribble.isScribble(stroke.path.map(\.location)) else { return false }
+        let area = stroke.renderBounds
+        let kept = strokes.dropLast().filter { !$0.renderBounds.intersects(area) }
+        let edits = textEdits(crossing: area)
+        guard kept.count < strokes.count - 1 || !edits.isEmpty else { return false } // covered nothing, so it's just a mark
+
+        registerStateUndo()
+        lastStrokeCount = kept.count
+        canvas.drawing = PKDrawing(strokes: Array(kept))
+        apply(edits)
         liveSince = max(liveSince, stroke.path.creationDate)
         syncElements()
         scheduleSave()
@@ -76,7 +107,7 @@ extension EditorModel {
             let thin = PKInk(.pen, color: stroke.ink.color.withAlphaComponent(1))
             switch mark {
             case .highlight:
-                return make(stroke.ink, [CGPoint(x: left, y: top + height / 2), CGPoint(x: right, y: top + height / 2)], size: height)
+                return make(stroke.ink, [CGPoint(x: left, y: top + height / 2), CGPoint(x: right, y: top + height / 2)], size: height * 1.6) // a marker lays down about 60% of its size
             case .underline:
                 return make(thin, [CGPoint(x: left, y: top + height), CGPoint(x: right, y: top + height)], size: 2)
             case .strikeout:
@@ -91,9 +122,8 @@ extension EditorModel {
         strokes += lines
         lastStrokeCount = strokes.count
         canvas.drawing = PKDrawing(strokes: strokes)
-        if let text = selection.string?.trimmingCharacters(in: .whitespacesAndNewlines) {
-            note.excerpts.append(Excerpt(text: text, pageID: note.pages[index].id, rect: stroke.renderBounds))
-        }
+        let text = selection.selectionsByLine().compactMap(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        note.excerpts.append(Excerpt(text: text, pageID: note.pages[index].id, rect: stroke.renderBounds))
     }
 
     // MARK: Area actions
@@ -117,7 +147,8 @@ extension EditorModel {
         guard let pdfIndex = note.pages[index].pdfPage, let page = PDFDocument(url: library.pdfURL(note.id))?.page(at: pdfIndex) else { return nil }
         let box = pageBox(page), scale = NoteLayout.width / max(box.width, 1), origin = NoteLayout.origins(heights)[index]
         let area = CGRect(x: rect.minX / scale, y: box.height - (rect.maxY - origin) / scale, width: rect.width / scale, height: rect.height / scale)
-        return page.selection(for: area.applying(page.transform(for: .cropBox).inverted()))?.string?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let selection = page.selection(for: area.applying(page.transform(for: .cropBox).inverted())) else { return nil }
+        return selection.selectionsByLine().compactMap(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func pageBox(_ page: PDFPage) -> CGSize {
@@ -382,6 +413,15 @@ extension EditorModel {
         if live { liveTailID = el.id }
     }
 
+    /// The box whose line this writing carries on, so words written side by side stay one line of text.
+    func liveTextBox(continuing point: CGPoint) -> Element? {
+        note.elements.last { el in
+            guard el.imageFile == nil, !el.isTape, el.cover == nil, el.comment == nil, !el.stamp, el.link == nil,
+                  !el.text.isEmpty, abs(point.y - el.rect.midY) <= max(el.rect.height, el.fontSize * 2) / 2 + el.fontSize * 0.5 else { return false }
+            return point.x >= el.rect.minX - el.fontSize && point.x <= Renderer.textEnd(el) + el.fontSize * 6
+        }
+    }
+
     /// A new text box for Scribble, starting where the Pencil came down and running to the page edge.
     func addLiveTextBox(at point: CGPoint) -> Element {
         registerStateUndo()
@@ -460,7 +500,7 @@ extension EditorModel {
             let points = [rect.minX, rect.maxX].enumerated().map { i, x in
                 PKStrokePoint(location: CGPoint(x: x, y: rect.midY), timeOffset: Double(i) * 0.05, size: size, opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
             }
-            appendStroke(PKStroke(ink: PKInk(.marker, color: highlightColor), path: PKStrokePath(controlPoints: points, creationDate: Date())))
+            appendStroke(PKStroke(ink: PKInk(.marker, color: highlightInk), path: PKStrokePath(controlPoints: points, creationDate: Date())))
         case .whiteout, .redact:
             registerStateUndo()
             note.elements.append(Element(rect: rect, cover: annotateKind == .redact ? "redact" : "whiteout"))
@@ -687,7 +727,14 @@ extension EditorModel {
     func insertText(_ text: String) {
         registerStateUndo()
         let c = visibleCenter()
-        addText(text, at: CGRect(x: 48, y: max(c.y - 200, 8), width: NoteLayout.width - 96, height: 30))
+        let rect = CGRect(x: 48, y: max(c.y - 200, 8), width: NoteLayout.width - 96, height: 30)
+        // Over a PDF's own text, only a filled note stays readable.
+        if note.pages[NoteLayout.pageIndex(y: c.y, heights: note.pages.map(\.height))].pdfPage != nil {
+            tool = .text
+            addTextElement(Element(rect: rect, text: text, fontSize: 18, colorHex: "1C1C1E", fillHex: "FFE98A"))
+        } else {
+            addText(text, at: rect)
+        }
     }
 
     func addSticker(_ emoji: String) {
