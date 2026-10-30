@@ -12,6 +12,7 @@ enum Sync {
     private static let stampsKey = "syncStamps"
     private static let folder = "Margin Notes"
 
+    static var hasFolder: Bool { UserDefaults.standard.data(forKey: bookmarkKey) != nil }
     static var folderName: String? { resolve()?.lastPathComponent }
     static var isInICloud: Bool { resolve()?.path.contains("Mobile Documents") ?? false }
 
@@ -31,7 +32,12 @@ enum Sync {
         guard let data = UserDefaults.standard.data(forKey: bookmarkKey) else { return nil }
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &stale) else { return nil }
-        if stale { try? setFolder(url) }
+        if stale {
+            // Still the same folder, so what's known about it stays. Forgetting would make every note look changed on both sides.
+            let scoped = url.startAccessingSecurityScopedResource()
+            if let fresh = try? url.bookmarkData() { UserDefaults.standard.set(fresh, forKey: bookmarkKey) }
+            if scoped { url.stopAccessingSecurityScopedResource() }
+        }
         return url
     }
 
@@ -194,7 +200,7 @@ enum Sync {
         try JSONSerialization.data(withJSONObject: json).write(to: file, options: .atomic)
     }
 
-    // ponytail: folders merge by id, so a deleted or renamed folder can come back from another device. Give them stamps if that bites.
+    // Folders merge by id, so a folder deleted or renamed on one device can come back from another.
     private static func mergeSubjects(_ local: URL, _ remote: URL) {
         func entries(_ url: URL) -> [[String: Any]] {
             (try? read(url)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [[String: Any]] } ?? []

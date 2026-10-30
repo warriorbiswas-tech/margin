@@ -101,7 +101,7 @@ struct AssistantSheet: View {
         case summary = "Summary", chat = "Chat", cards = "Flashcards", quiz = "Quiz", map = "Mind Map", finish = "Finish Notes"
         var id: String { rawValue }
     }
-    @State private var tab = Tab.cards
+    @State private var tab = Tab.chat
     @State private var wholeNote = true
     @State private var fromPage = 1
     @State private var toPage = 1
@@ -150,6 +150,7 @@ struct AssistantSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .onAppear {
+                LocalLLM.shared.warmUp()
                 // A whole book takes many minutes, so a long note starts on the pages in front of you.
                 wholeNote = !isLong
                 fromPage = model.currentPage
@@ -204,8 +205,9 @@ struct GeneratedText: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if working {
-                    HStack {
+                    HStack(spacing: 12) {
                         ProgressView()
+                        Text(text.isEmpty ? "Reading your notes…" : "Writing…").foregroundStyle(.secondary)
                         Button("Stop", role: .destructive) { task?.cancel() }
                     }
                 } else {
@@ -213,10 +215,12 @@ struct GeneratedText: View {
                 }
                 if let error { Text(error).foregroundStyle(.red) }
                 if !text.isEmpty {
-                    Text(text).textSelection(.enabled)
-                    HStack {
-                        Button("Insert into Note", systemImage: "text.badge.plus") { insertInto.insertText(text) }
-                        Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = text }
+                    Text(TextTools.styled(text)).textSelection(.enabled)
+                    if !working {
+                        HStack {
+                            Button("Insert into Note", systemImage: "text.badge.plus") { insertInto.insertText(TextTools.plain(text)) }
+                            Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = TextTools.plain(text) }
+                        }
                     }
                 }
             }
@@ -251,6 +255,7 @@ struct ChatView: View {
     @State private var draft = ""
     @State private var working = false
     @State private var error: String?
+    @State private var task: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -258,34 +263,43 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         if messages.isEmpty {
-                            Text("Ask anything. Margin finds the right pages first, so this works on long books too.").foregroundStyle(.secondary)
+                            Text("Ask anything. Margin finds the right pages first, so this works on long books too, and nothing leaves your iPad.").foregroundStyle(.secondary)
                         }
                         ForEach(Array(messages.enumerated()), id: \.offset) { i, message in
-                            Text(message.text)
+                            Text(message.role == "user" ? AttributedString(message.text) : TextTools.styled(message.text))
                                 .textSelection(.enabled)
                                 .padding(10)
                                 .background(message.role == "user" ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
                                 .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
                                 .id(i)
                         }
-                        if working { ProgressView() }
+                        if working, messages.last?.text.isEmpty != false {
+                            Label { Text("Finding the right pages…") } icon: { ProgressView() }.foregroundStyle(.secondary)
+                        }
                         if let error { Text(error).foregroundStyle(.red) }
+                        Color.clear.frame(height: 1).id("end")
                     }
                     .padding()
                 }
-                .onChange(of: messages.count) { _, count in
-                    withAnimation { proxy.scrollTo(count - 1, anchor: .bottom) }
-                }
+                .onChange(of: messages.count) { withAnimation { proxy.scrollTo("end", anchor: .bottom) } }
+                .onChange(of: messages.last?.text) { proxy.scrollTo("end", anchor: .bottom) }
             }
+            .onDisappear { task?.cancel() }
             Divider()
             HStack {
                 TextField("Ask a question", text: $draft, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(send)
-                Button("Send", systemImage: "arrow.up.circle.fill", action: send)
-                    .labelStyle(.iconOnly)
-                    .font(.title2)
-                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty || working)
+                if working {
+                    Button("Stop", systemImage: "stop.circle.fill") { task?.cancel() }
+                        .labelStyle(.iconOnly)
+                        .font(.title2)
+                } else {
+                    Button("Send", systemImage: "arrow.up.circle.fill", action: send)
+                        .labelStyle(.iconOnly)
+                        .font(.title2)
+                        .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
             }
             .padding()
         }
@@ -298,7 +312,7 @@ struct ChatView: View {
         messages.append(("user", question))
         working = true
         error = nil
-        Task {
+        task = Task {
             defer { working = false }
             do {
                 let system = AI.chatSystem(context: await context(question))
@@ -310,8 +324,9 @@ struct ChatView: View {
                 }
                 messages[last].text = answer
             } catch {
-                self.error = error is CancellationError ? "Stopped." : error.localizedDescription
-                messages.removeLast(messages.last?.text.isEmpty == true && messages.last?.role == "assistant" ? 2 : 1)
+                // What was already written of the answer stays, as when stopping any other reply.
+                if messages.last?.text.isEmpty == true { messages.removeLast() }
+                if !(error is CancellationError) { self.error = error.localizedDescription }
             }
         }
     }
@@ -532,7 +547,7 @@ struct StudyHome: View {
             .padding()
             Divider()
             if AI.isAvailable {
-                ChatView { question in library.context(for: question) }
+                ChatView { question in await library.context(for: question) }
             } else {
                 ModelPrompt(file: .writing)
             }

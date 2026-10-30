@@ -30,12 +30,20 @@ struct MarginApp: App {
         }
     }
 
+    private static var backgroundSync = UIBackgroundTaskIdentifier.invalid
+
+    private static func endBackgroundSync() {
+        guard backgroundSync != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundSync)
+        backgroundSync = .invalid
+    }
+
     private func syncBeforeSuspending() {
-        var task = UIBackgroundTaskIdentifier.invalid
-        task = UIApplication.shared.beginBackgroundTask { UIApplication.shared.endBackgroundTask(task) }
+        Self.endBackgroundSync()
+        Self.backgroundSync = UIApplication.shared.beginBackgroundTask { Self.endBackgroundSync() }
         Task {
             await library.sync()
-            UIApplication.shared.endBackgroundTask(task)
+            Self.endBackgroundSync()
         }
     }
 }

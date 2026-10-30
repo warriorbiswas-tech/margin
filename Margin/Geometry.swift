@@ -332,37 +332,88 @@ enum Scribble {
     }
 }
 
-enum TranscriptGroup {
-    static func lines(_ words: [(text: String, time: TimeInterval, duration: TimeInterval)], offset: TimeInterval = 0) -> [(time: TimeInterval, text: String)] {
-        var lines: [(time: TimeInterval, text: String)] = []
-        var current: [String] = [], start: TimeInterval = 0, end: TimeInterval = 0
-        for word in words {
-            if !current.isEmpty, word.time - end > 0.8 || current.count >= 14 {
-                lines.append((start + offset, current.joined(separator: " ")))
-                current = []
-            }
-            if current.isEmpty { start = word.time }
-            current.append(word.text)
-            end = word.time + word.duration
+/// Undo and redo over whole states, which stay cheap to keep because their parts share storage until they change.
+struct History<State: Equatable> {
+    private var past: [State] = []
+    private var future: [State] = []
+    let limit: Int
+
+    var canUndo: Bool { !past.isEmpty }
+    var canRedo: Bool { !future.isEmpty }
+
+    mutating func record(_ state: State) {
+        guard past.last != state else { return }
+        past.append(state)
+        if past.count > limit { past.removeFirst() }
+        future.removeAll()
+    }
+
+    /// A step that wouldn't change anything is skipped, so one undo always does something visible.
+    mutating func undo(from current: State) -> State? {
+        while let state = past.popLast() {
+            guard state != current else { continue }
+            future.append(current)
+            return state
         }
-        if !current.isEmpty { lines.append((start + offset, current.joined(separator: " "))) }
-        return lines
+        return nil
+    }
+
+    mutating func redo(from current: State) -> State? {
+        while let state = future.popLast() {
+            guard state != current else { continue }
+            past.append(current)
+            return state
+        }
+        return nil
+    }
+
+    mutating func clear() {
+        past.removeAll()
+        future.removeAll()
     }
 }
 
 enum TextTools {
-    /// The passages most likely to answer a question, up to `limit` characters, best first.
+    private static let commonWords: Set<String> = [
+        "an", "as", "at", "be", "by", "do", "if", "in", "is", "it", "of", "on", "or", "to", "about", "after", "again", "also", "and", "are", "but", "can", "could", "did", "does", "for", "from", "give", "had", "has", "have",
+        "how", "into", "its", "may", "more", "not", "our", "shall", "should", "tell", "than", "that", "the", "their", "them", "then", "there",
+        "these", "they", "this", "was", "were", "what", "when", "where", "which", "who", "why", "will", "with", "would", "you", "your",
+    ]
+
+    /// Words reduced to a rough stem, so "dividing" finds "divides". Numbers and short terms like "dna" stay as they are.
+    private static func terms(in text: String) -> [String] {
+        text.lowercased().split { !$0.isLetter && !$0.isNumber }.compactMap { word in
+            guard word.count > 1, !commonWords.contains(String(word)) else { return nil }
+            for suffix in ["ing", "ies", "ed", "es", "s"] where word.count > suffix.count + 3 && word.hasSuffix(suffix) {
+                return String(word.dropLast(suffix.count))
+            }
+            return String(word)
+        }
+    }
+
+    /// The passages most likely to answer a question, up to `limit` characters, best first, ranked by BM25: a rare
+    /// word counts for more than a common one, and a passage can't win just by being long.
     /// Falls back to the opening passages when no words match, so a broad question still gets an answer.
     static func bestPassages(query: String, passages: [String], limit: Int) -> [Int] {
-        let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { $0.count > 2 })
-        let scored: [(index: Int, score: Int)] = passages.enumerated().compactMap { i, passage in
-            guard !passage.isEmpty else { return nil }
-            let text = passage.lowercased()
-            let hits = words.reduce(0) { total, word in
-                guard text.contains(word) else { return total }
-                return total + 100 + min(text.components(separatedBy: word).count - 1, 20)
+        let wanted = Set(terms(in: query))
+        var lengths = [Int](repeating: 0, count: passages.count)
+        var counts = [[String: Int]](repeating: [:], count: passages.count)
+        var containing: [String: Int] = [:]
+        for (i, passage) in passages.enumerated() {
+            let words = terms(in: passage)
+            lengths[i] = words.count
+            for word in words where wanted.contains(word) { counts[i][word, default: 0] += 1 }
+            for word in counts[i].keys { containing[word, default: 0] += 1 }
+        }
+        let total = Double(passages.count), average = max(Double(lengths.reduce(0, +)) / max(total, 1), 1)
+        let scored: [(index: Int, score: Double)] = passages.indices.compactMap { i in
+            guard !passages[i].isEmpty else { return nil }
+            let score = counts[i].reduce(0.0) { sum, entry in
+                let rarity = log(1 + (total - Double(containing[entry.key] ?? 0) + 0.5) / (Double(containing[entry.key] ?? 0) + 0.5))
+                let frequency = Double(entry.value)
+                return sum + rarity * frequency * 2.2 / (frequency + 1.2 * (0.25 + 0.75 * Double(lengths[i]) / average))
             }
-            return (i, hits)
+            return (i, score)
         }
         let ranked = scored.sorted { $0.score != $1.score ? $0.score > $1.score : $0.index < $1.index }
         var chosen: [Int] = [], used = 0
@@ -374,6 +425,29 @@ enum TextTools {
             if used >= limit { break }
         }
         return chosen
+    }
+
+    /// The small subset of Markdown the model writes, for showing on screen.
+    static func styled(_ answer: String) -> AttributedString {
+        let lines = answer.components(separatedBy: "\n").map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#") {
+                let title = trimmed.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)
+                return title.isEmpty ? "" : "**\(title)**"
+            }
+            if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") {
+                let indent = String(line.prefix { $0 == " " })
+                return indent + "•  " + trimmed.dropFirst(2)
+            }
+            return line
+        }
+        let source = lines.joined(separator: "\n")
+        return (try? AttributedString(markdown: source, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(source)
+    }
+
+    /// The same text without its markers, for placing into a note as plain type.
+    static func plain(_ answer: String) -> String {
+        String(styled(answer).characters)
     }
 
     /// Models often write "A. Paris" even though the option's position already says which it is.
@@ -453,13 +527,9 @@ enum TextTools {
         if let last = lines.last {
             text = last
         }
+        text = String(text.filter { !$0.unicodeScalars.contains { $0.properties.isEmojiPresentation } })
         text = text.trimmingCharacters(in: CharacterSet(charactersIn: "`*$= \t\n\r"))
         return text
     }
 
-    static func score(query: String, in text: String) -> Int {
-        let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.filter { $0.count > 2 })
-        let haystack = text.lowercased()
-        return words.filter { haystack.contains($0) }.count
-    }
 }

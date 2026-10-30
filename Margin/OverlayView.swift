@@ -181,7 +181,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
 
     @objc private func onLongPress(_ g: UILongPressGestureRecognizer) {
         guard g.state == .began, let model, model.tool == .tape || model.tool == .annotate, let el = element(at: g.location(in: self)) else { return }
-        model.registerStateUndo()
+        model.checkpoint()
         model.removeElement(el.id)
     }
 
@@ -228,7 +228,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
             resizing = onHandle(p)
             if !resizing { model.selectedElementID = element(at: p)?.id }
             guard let id = model.selectedElementID, let el = model.note.elements.first(where: { $0.id == id }) else { return }
-            model.registerStateUndo()
+            model.checkpoint()
             dragging = id
             dragStart = el.rect
         case .changed:

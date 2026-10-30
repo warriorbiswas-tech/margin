@@ -77,6 +77,7 @@ struct Element: Codable, Identifiable, Hashable {
     var comment: String?
 
     var inset: CGFloat { fillHex == nil && !stamp ? 0 : 10 }
+    var isBlank: Bool { text.isEmpty && imageFile == nil && !isTape && cover == nil && fillHex == nil && comment == nil }
 }
 
 struct TranscriptLine: Codable, Hashable {

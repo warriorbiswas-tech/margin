@@ -74,6 +74,7 @@ struct ScannerSheet: UIViewControllerRepresentable {
 }
 
 struct IconButton: View {
+    @Environment(\.isEnabled) private var isEnabled
     let icon: String
     var active = false
     var label: String
@@ -86,11 +87,53 @@ struct IconButton: View {
                 .frame(width: 44, height: 44)
                 .background(active ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 10))
                 .foregroundStyle(active ? Color.accentColor : Color.primary)
+                .opacity(isEnabled ? 1 : 0.3)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
         .accessibilityAddTraits(active ? .isSelected : [])
+    }
+}
+
+/// Its own view, so pinching only redraws this label rather than the whole editor on every frame.
+private struct ZoomMenu: View {
+    let model: EditorModel
+
+    var body: some View {
+        Menu {
+            Button("Fit Page to Width") { model.setZoom(percent: 100) }
+            ForEach([40, 50, 75, 125, 150, 200, 300, 400], id: \.self) { percent in
+                Button("\(percent)%") { model.setZoom(percent: CGFloat(percent)) }
+            }
+        } label: {
+            Text("\(model.zoomPercent)%").font(.subheadline.monospacedDigit()).frame(minWidth: 46, minHeight: 42)
+        }
+        .accessibilityLabel("Zoom, \(model.zoomPercent) percent")
+    }
+}
+
+private struct PageThumbnail: View {
+    let model: EditorModel
+    let page: Page
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().scaledToFit()
+            } else {
+                Color.secondary.opacity(0.08)
+            }
+        }
+        .frame(width: 60, height: 80)
+        .overlay(RoundedRectangle(cornerRadius: 2).stroke(.separator))
+        .accessibilityHidden(true)
+        .task(id: page) {
+            try? await Task.sleep(for: .milliseconds(120)) // a quick scroll passes by without drawing anything
+            guard !Task.isCancelled else { return }
+            image = await model.thumbnailInBackground(page, width: 180)
+        }
     }
 }
 
@@ -248,7 +291,7 @@ struct EditorView: View {
         }
         .alert("Go to Page", isPresented: $askingPage) {
             TextField("1 to \(model.note.pages.count)", text: $pageEntry)
-                .keyboardType(.numberPad)
+                .keyboardType(.numbersAndPunctuation)
             Button("Cancel", role: .cancel) {}
             Button("Go") {
                 guard let number = Int(pageEntry.trimmingCharacters(in: .whitespaces)) else { return }
@@ -354,17 +397,13 @@ struct EditorView: View {
 
     private var noteControls: some View {
         HStack(spacing: 2) {
-            Menu {
-                Button("Fit Page to Width") { model.setZoom(percent: 100) }
-                ForEach([40, 50, 75, 125, 150, 200, 300, 400], id: \.self) { percent in
-                    Button("\(percent)%") { model.setZoom(percent: CGFloat(percent)) }
-                }
-            } label: {
-                Text("\(model.zoomPercent)%").font(.subheadline.monospacedDigit()).frame(minWidth: 46, minHeight: 42)
-            }
-            .accessibilityLabel("Zoom, \(model.zoomPercent) percent")
-            IconButton(icon: "arrow.uturn.backward", label: "Undo") { model.undo() }.disabled(model.playing != nil)
-            IconButton(icon: "arrow.uturn.forward", label: "Redo") { model.redo() }.disabled(model.playing != nil)
+            ZoomMenu(model: model)
+            IconButton(icon: "arrow.uturn.backward", label: "Undo") { model.undo() }
+                .disabled(!model.canUndo || model.playing != nil)
+                .keyboardShortcut("z", modifiers: .command)
+            IconButton(icon: "arrow.uturn.forward", label: "Redo") { model.redo() }
+                .disabled(!model.canRedo || model.playing != nil)
+                .keyboardShortcut("z", modifiers: [.command, .shift])
             recordControl
             IconButton(icon: "graduationcap", label: "Study") { panel = .assistant }
             IconButton(icon: "square.grid.2x2", label: "Pages") { panel = .pages }
@@ -472,7 +511,7 @@ struct EditorView: View {
 
     private var moreMenu: some View {
         Menu {
-            Button("Export PDF", systemImage: "square.and.arrow.up") { exportURL = model.exportPDF() }
+            Button("Export PDF", systemImage: "square.and.arrow.up") { Task { exportURL = await model.exportPDF() } }
             Button("Find in Note", systemImage: "magnifyingglass") { panel = .find }
             Button("Excerpts", systemImage: "scissors") { panel = .excerpts }
             Button("Version History", systemImage: "clock.arrow.circlepath") {
@@ -921,10 +960,9 @@ struct PagesSheet: View {
                     Toggle("Bookmarked Pages Only", isOn: $bookmarksOnly)
                 }
                 Section("Pages") {
-                    ForEach(Array(model.note.pages.enumerated()), id: \.element.id) { i, page in
-                        if !bookmarksOnly || page.bookmarked {
-                            row(page, index: i)
-                        }
+                    // Filtered first: an `if` inside the ForEach makes List build every row at once, thumbnails included.
+                    ForEach(Array(model.note.pages.enumerated()).filter { !bookmarksOnly || $0.element.bookmarked }, id: \.element.id) { i, page in
+                        row(page, index: i)
                     }
                     .onMove { from, to in
                         var pages = model.note.pages
@@ -969,20 +1007,13 @@ struct PagesSheet: View {
                 }
             }
             .overlay { if working { ProgressView().controlSize(.large) } }
-            .onAppear { outline = model.pdfOutline() }
+            .task { outline = await model.pdfOutline() }
         }
     }
 
     private func row(_ page: Page, index i: Int) -> some View {
         HStack(spacing: 14) {
-            if let image = model.thumbnail(page, width: 180) {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 60, height: 80)
-                    .overlay(RoundedRectangle(cornerRadius: 2).stroke(.separator))
-                    .accessibilityHidden(true)
-            }
+            PageThumbnail(model: model, page: page)
             VStack(alignment: .leading) {
                 Text("Page \(i + 1)").font(.headline)
                 Text(page.pdfPage == nil ? (page.backgroundFile == nil ? "\(page.style.title), \(page.color.title)" : "Custom paper") : "PDF")

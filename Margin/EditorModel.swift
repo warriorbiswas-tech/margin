@@ -69,6 +69,25 @@ enum PenStyle: String, CaseIterable, Identifiable {
     }
 }
 
+/// PencilKit's own undo list knows nothing of pages or text boxes and loses track whenever the drawing is replaced.
+/// All undo goes through EditorModel's history, so this list stays empty.
+final class InkCanvas: PKCanvasView {
+    private let unused: UndoManager = {
+        let manager = UndoManager()
+        manager.disableUndoRegistration()
+        return manager
+    }()
+    override var undoManager: UndoManager? { unused }
+}
+
+/// Everything one undo step puts back.
+struct NoteState: Equatable {
+    var pages: [Page]
+    var elements: [Element]
+    var excerpts: [Excerpt]
+    var drawing: PKDrawing
+}
+
 /// CATiledLayer stays sharp at any zoom and only paints what is on screen. `painter` runs on background threads.
 final class TiledView: UIView {
     final class FastLayer: CATiledLayer {
@@ -98,11 +117,15 @@ final class TiledView: UIView {
 
 @MainActor @Observable
 final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PKCanvasViewDelegate, UIPencilInteractionDelegate {
+    private static let fingerDrawingKey = "fingerDrawing"
     @ObservationIgnored let library: Library
-    @ObservationIgnored let canvas = PKCanvasView()
+    @ObservationIgnored let canvas = InkCanvas()
     @ObservationIgnored let overlay = OverlayView()
     @ObservationIgnored private let underlay = UIView()
     @ObservationIgnored var pageViews: [UUID: TiledView] = [:]
+    @ObservationIgnored private var pageHeights: [CGFloat] = []
+    @ObservationIgnored private var pageOrigins: [CGFloat] = []
+    @ObservationIgnored private var shownPages: ClosedRange<Int>?
     @ObservationIgnored private var elementViews: [UUID: UIView] = [:]
     @ObservationIgnored var pdf: CGPDFDocument?
     @ObservationIgnored private var lastWidth: CGFloat = 0
@@ -113,6 +136,15 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     @ObservationIgnored private let openedNote: Note
     @ObservationIgnored private let openedDrawing: PKDrawing
     @ObservationIgnored var inkChanged = false
+    @ObservationIgnored private var thumbnailStale = false
+    @ObservationIgnored private var startingRecording = false
+    @ObservationIgnored private var studyCache: (drawing: PKDrawing, pages: [Page], elements: [Element], text: [String])?
+    @ObservationIgnored private var history = History<NoteState>(limit: 200)
+    @ObservationIgnored private var inkOnRecord: PKDrawing
+    @ObservationIgnored private var touchRecorded = false
+    @ObservationIgnored private var lastTouchType = UITouch.TouchType.direct
+    private(set) var canUndo = false
+    private(set) var canRedo = false
 
     nonisolated var id: ObjectIdentifier { ObjectIdentifier(self) }
 
@@ -207,8 +239,9 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     var focusMode = false
     var regionRect: CGRect? { didSet { overlay.refreshRegion() } }
     var busy: String?
-    var fingerDrawing = !UIPencilInteraction.prefersPencilOnlyDrawing {
+    var fingerDrawing = UserDefaults.standard.object(forKey: EditorModel.fingerDrawingKey) as? Bool ?? !UIPencilInteraction.prefersPencilOnlyDrawing {
         didSet {
+            UserDefaults.standard.set(fingerDrawing, forKey: Self.fingerDrawingKey)
             applyDrawingPolicy()
             applyTool()
         }
@@ -221,7 +254,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     var showWeb = false
     var openNoteRequest: UUID?
     var zoomOn = false { didSet { zoomDidToggle() } }
-    @ObservationIgnored let zoomCanvas = PKCanvasView()
+    @ObservationIgnored let zoomCanvas = InkCanvas()
     @ObservationIgnored var zoomRect = CGRect(x: 40, y: 72, width: 300, height: 90)
     @ObservationIgnored let zoomBackground = UIImageView()
     @ObservationIgnored let reader = AVSpeechSynthesizer()
@@ -265,6 +298,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         openedNote = note
         savedDrawing = drawing
         openedDrawing = drawing
+        inkOnRecord = drawing
         super.init()
         pdf = CGPDFDocument(library.pdfURL(note.id) as CFURL)
 
@@ -289,7 +323,10 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         canvas.panGestureRecognizer.require(toFail: overlay.pan)
         liveScribble.model = self
         let trail = TouchTrail(target: nil, action: nil)
-        trail.onTouch = { [weak self] touch, began in self?.eraserTouch(touch, began: began) }
+        trail.onTouch = { [weak self] touch, began in
+            if began { self?.lastTouchType = touch.type }
+            self?.eraserTouch(touch, began: began)
+        }
         canvas.addGestureRecognizer(trail)
         overlay.addInteraction(UIIndirectScribbleInteraction(delegate: liveScribble))
         configureZoomCanvas()
@@ -316,6 +353,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     // MARK: Canvas layout
 
     func containerDidLayout(size: CGSize) {
+        defer { showNearbyPages() }
         guard size.width > 0, size.width != lastWidth else { return }
         var left: CGFloat?, top = canvas.contentOffset.y / max(canvas.zoomScale, 0.01)
         var factor = lastWidth > 0 ? canvas.zoomScale / (lastWidth / NoteLayout.width) : 1
@@ -330,7 +368,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         updateForZoom()
         let z = canvas.zoomScale
         let x = left.map { min($0 * z, max(canvas.contentSize.width - size.width, 0)) } ?? -canvas.contentInset.left
-        canvas.contentOffset = CGPoint(x: max(x, -canvas.contentInset.left), y: min(top * z, canvas.contentSize.height))
+        canvas.contentOffset = CGPoint(x: max(x, -canvas.contentInset.left), y: max(0, min(top * z, canvas.contentSize.height - size.height)))
     }
 
     private var positionKey: String { Library.positionKey(note.id) }
@@ -362,14 +400,24 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         overlay.refreshSelection()
     }
 
-    func scrollViewDidZoom(_ scrollView: UIScrollView) { updateForZoom() }
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        updateForZoom()
+        showNearbyPages()
+    }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard scrollView === canvas else { return }
         let z = max(canvas.zoomScale, 0.01)
         let middle = (canvas.contentOffset.y + canvas.bounds.height / 2) / z
-        let page = NoteLayout.pageIndex(y: middle, heights: note.pages.map(\.height)) + 1
+        let page = NoteLayout.pageIndex(y: middle, heights: pageHeights) + 1
         if page != currentPage { currentPage = page }
+        showNearbyPages()
+    }
+
+    func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { rememberPosition() }
+    func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) { rememberPosition() }
+    func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { rememberPosition() }
     }
 
     func visibleCenter() -> CGPoint {
@@ -378,13 +426,27 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     func rebuildPages() {
-        let ids = Set(note.pages.map(\.id))
-        for (id, view) in pageViews where !ids.contains(id) {
+        pageHeights = note.pages.map(\.height)
+        pageOrigins = NoteLayout.origins(pageHeights)
+        shownPages = nil
+        showNearbyPages()
+        updateForZoom()
+    }
+
+    /// Only pages within a screen of the view exist; a long book would otherwise hold hundreds of tiled layers in memory.
+    private func showNearbyPages() {
+        guard !note.pages.isEmpty, pageHeights.count == note.pages.count else { return }
+        let z = max(canvas.zoomScale, 0.01), top = canvas.contentOffset.y / z, height = canvas.bounds.height / z
+        let nearby = NoteLayout.pageIndex(y: top - height, heights: pageHeights)...NoteLayout.pageIndex(y: top + height * 2, heights: pageHeights)
+        guard nearby != shownPages else { return }
+        shownPages = nearby
+        let wanted = Set(note.pages[nearby].map(\.id))
+        for (id, view) in pageViews where !wanted.contains(id) {
             view.removeFromSuperview()
             pageViews[id] = nil
         }
-        let origins = NoteLayout.origins(note.pages.map(\.height))
-        for (page, y) in zip(note.pages, origins) {
+        for i in nearby {
+            let page = note.pages[i], y = pageOrigins[i]
             let view = pageViews[page.id] ?? {
                 let v = TiledView(frame: .zero)
                 underlay.insertSubview(v, at: 0)
@@ -401,7 +463,6 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
                 view.setNeedsDisplay()
             }
         }
-        updateForZoom()
     }
 
     func syncElements() {
@@ -519,13 +580,58 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     func undo() {
+        guard playing == nil else { return }
         overlay.commitEditing()
-        canvas.undoManager?.undo()
+        guard let state = history.undo(from: currentState) else { return }
+        restore(state)
     }
 
     func redo() {
+        guard playing == nil else { return }
         overlay.commitEditing()
-        canvas.undoManager?.redo()
+        guard let state = history.redo(from: currentState) else { return }
+        restore(state)
+    }
+
+    private var currentState: NoteState {
+        // A box with nothing written in it yet doesn't show, so undoing to it would look like nothing happened.
+        NoteState(pages: note.pages, elements: note.elements.filter { !$0.isBlank }, excerpts: note.excerpts, drawing: currentDrawing)
+    }
+
+    private func restore(_ state: NoteState) {
+        let pagesChanged = state.pages != note.pages
+        note.pages = state.pages
+        note.elements = state.elements
+        note.excerpts = state.excerpts
+        selectedElementID = nil
+        setInk(state.drawing)
+        if pagesChanged { rebuildPages() }
+        syncElements()
+        scheduleSave()
+        updateUndoButtons()
+    }
+
+    /// Call before changing the note. Strokes record themselves, in `canvasViewDrawingDidChange`.
+    func checkpoint() {
+        history.record(currentState)
+        updateUndoButtons()
+    }
+
+    func clearHistory() {
+        history.clear()
+        updateUndoButtons()
+    }
+
+    private func updateUndoButtons() {
+        if canUndo != history.canUndo { canUndo = history.canUndo }
+        if canRedo != history.canRedo { canRedo = history.canRedo }
+    }
+
+    /// Replaces the ink without it counting as something the pen just did.
+    func setInk(_ drawing: PKDrawing) {
+        inkOnRecord = drawing
+        lastStrokeCount = drawing.strokes.count
+        canvas.drawing = drawing
     }
 
     // Scrolling, drawing or a text box must never swallow the undo gestures.
@@ -540,13 +646,23 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         selectedElementID = el.id
         overlay.beginEditing(el)
     }
-    @objc private func tapUndo() { if playing == nil { undo() } }
-    @objc private func tapRedo() { if playing == nil { redo() } }
+    @objc private func tapUndo() {
+        guard playing == nil else { return }
+        notify(canUndo ? "Undo" : "Nothing to Undo")
+        undo()
+    }
+
+    @objc private func tapRedo() {
+        guard playing == nil else { return }
+        notify(canRedo ? "Redo" : "Nothing to Redo")
+        redo()
+    }
 
     // MARK: Ink changes
 
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
         penDown = true
+        touchRecorded = false
         liveTask?.cancel()
     }
 
@@ -562,13 +678,24 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard playing == nil else { return }
         if syncZoom(from: canvasView) { return }
-        let strokes = canvas.drawing.strokes
+        let drawing = canvas.drawing
+        if drawing != inkOnRecord {
+            if !touchRecorded {
+                var before = currentState
+                before.drawing = inkOnRecord
+                history.record(before)
+            }
+            touchRecorded = penDown
+            inkOnRecord = drawing
+            updateUndoButtons()
+        }
+        let strokes = drawing.strokes
         let added = strokes.count == lastStrokeCount + 1
         lastStrokeCount = strokes.count
         if added, let last = strokes.last, -last.path.creationDate.timeIntervalSinceNow < 3 {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
-                self.noticePencil(last)
+                self.noticePencil()
                 if self.tool == .pen, Prefs.scribbleErase, self.scribbleErase(last) { return }
                 if self.tool == .pen, Prefs.holdForShapes, !self.snapShapes, self.snapIfHeld(last) { return }
                 if self.tool == .pen, self.snapShapes { self.snap(last) }
@@ -589,10 +716,11 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         return true
     }
 
-    /// A finger always reports a flat altitude, so a tilted point means a Pencil, and Live Text can move to Scribble.
-    private func noticePencil(_ stroke: PKStroke) {
-        guard liveText, fingerDrawing, let point = stroke.path.first, point.altitude < .pi / 2 - 0.05 else { return }
-        fingerDrawing = false
+    /// Whoever writes with a Pencil rests a hand on the page and scrolls with a finger, so the first Pencil stroke stops
+    /// fingers drawing, unless they were turned on by choice. It also lets Live Text move to Scribble.
+    private func noticePencil() {
+        guard fingerDrawing, lastTouchType == .pencil else { return }
+        if liveText || UserDefaults.standard.object(forKey: Self.fingerDrawingKey) == nil { fingerDrawing = false }
     }
 
     /// Scribble can be off in Settings, or unavailable for the keyboard language. A Pencil stroke
@@ -621,8 +749,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             PKStrokePoint(location: p, timeOffset: Double(i) * 0.01, size: width, opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
         }
         strokes[strokes.count - 1] = PKStroke(ink: stroke.ink, path: PKStrokePath(controlPoints: points, creationDate: stroke.path.creationDate), transform: stroke.transform)
-        registerStateUndo()
-        canvas.drawing = PKDrawing(strokes: strokes)
+        setInk(PKDrawing(strokes: strokes))
     }
 
     private func appendPageIfNeeded(after bounds: CGRect) {
@@ -632,26 +759,11 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         rebuildPages()
     }
 
-    func registerStateUndo() {
-        let pages = note.pages, elements = note.elements, drawing = canvas.drawing
-        canvas.undoManager?.registerUndo(withTarget: self) { model in
-            model.registerStateUndo()
-            model.note.pages = pages
-            model.note.elements = elements
-            model.lastStrokeCount = drawing.strokes.count
-            model.canvas.drawing = drawing
-            model.selectedElementID = nil
-            model.rebuildPages()
-            model.syncElements()
-            model.scheduleSave()
-        }
-    }
-
     // MARK: Pages
 
     func setPages(_ new: [Page]) {
         guard !new.isEmpty else { return }
-        registerStateUndo()
+        checkpoint()
         let heights = note.pages.map(\.height)
         let shifts = NoteLayout.shifts(old: note.pages.map { ($0.id, $0.height) }, new: new.map { ($0.id, $0.height) })
         let strokes: [PKStroke] = canvas.drawing.strokes.compactMap { stroke in
@@ -667,8 +779,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             return moved
         }
         note.pages = new
-        lastStrokeCount = strokes.count
-        canvas.drawing = PKDrawing(strokes: strokes)
+        setInk(PKDrawing(strokes: strokes))
         rebuildPages()
         syncElements()
         scheduleSave()
@@ -694,13 +805,28 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     func insertPDF(_ doc: PDFDocument) {
-        let pages = library.appendPDF(doc, to: note.id)
-        pdf = CGPDFDocument(library.pdfURL(note.id) as CFURL)
-        // Repaint existing PDF pages against the reloaded document.
-        pageViews.values.forEach { $0.contentKey = nil }
-        inkChanged = true
-        printedPages = nil
-        setPages(note.pages + pages)
+        busy = "Adding pages…"
+        Task {
+            let pages = await library.appendPDF(doc, to: note.id)
+            busy = nil
+            pdf = CGPDFDocument(library.pdfURL(note.id) as CFURL)
+            // Repaint existing PDF pages against the reloaded document.
+            pageViews.values.forEach { $0.contentKey = nil }
+            inkChanged = true
+            printedPages = nil
+            setPages(note.pages + pages)
+        }
+    }
+
+    /// Rendered off the main thread, so a page list on a long book scrolls instead of stalling.
+    func thumbnailInBackground(_ page: Page, width: CGFloat) async -> UIImage? {
+        guard let i = note.pages.firstIndex(of: page) else { return nil }
+        let note = note, drawing = currentDrawing, doc = pdf, dir = library.dir(note.id)
+        struct Unchecked: @unchecked Sendable { let doc: CGPDFDocument? }
+        let source = Unchecked(doc: doc)
+        return await Task.detached(priority: .userInitiated) {
+            autoreleasepool { Renderer.thumbnail(page: page, index: i, note: note, drawing: drawing, pdf: source.doc, dir: dir, width: width) }
+        }.value
     }
 
     func thumbnail(_ page: Page, width: CGFloat) -> UIImage? {
@@ -717,7 +843,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     // MARK: Elements
 
     func addTextBox(at point: CGPoint) -> Element {
-        registerStateUndo()
+        checkpoint()
         let width = min(380, NoteLayout.width - point.x - 12)
         var el = Element(rect: CGRect(x: max(min(point.x, NoteLayout.width - 120), 0), y: point.y, width: max(width, 108), height: 30), fontSize: textSize, colorHex: textColor.hex, fontName: textFont, bold: textBold)
         el.rect.size.height = Renderer.textHeight(el)
@@ -745,7 +871,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             message = "Couldn't save the image: \(error.localizedDescription)"
             return
         }
-        registerStateUndo()
+        checkpoint()
         let width = min(420, size.width), height = width * size.height / size.width
         let c = visibleCenter()
         let el = Element(rect: CGRect(x: max(0, c.x - width / 2), y: c.y - height / 2, width: width, height: height), imageFile: file)
@@ -773,14 +899,15 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     func deleteSelected() {
         guard let id = selectedElementID else { return }
         overlay.cancelEditing()
-        registerStateUndo()
+        checkpoint()
         removeElement(id)
     }
 
     func applyTextStyle() {
-        guard let id = selectedElementID else { return }
+        guard let id = selectedElementID, let current = note.elements.first(where: { $0.id == id }), current.imageFile == nil,
+              current.fontSize != textSize || current.colorHex != textColor.hex || current.fontName != textFont || current.bold != textBold else { return }
+        checkpoint()
         updateElement(id) { el in
-            guard el.imageFile == nil else { return }
             el.fontSize = textSize
             el.colorHex = textColor.hex
             el.fontName = textFont
@@ -799,29 +926,33 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         saveTask?.cancel()
         saveTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled else { return }
-            self?.saveNow()
+            guard !Task.isCancelled, let self else { return }
+            self.rememberPosition()
+            self.storeChanges()
         }
     }
 
+    /// Hands anything new to the library's writer, so the pen never waits on the disk.
+    private func storeChanges() {
+        let drawing = currentDrawing, inkDiffers = drawing != savedDrawing
+        guard inkDiffers || note != savedNote else { return }
+        library.save(note, ink: inkDiffers ? drawing : nil) { [weak self] reason in self?.message = reason }
+        savedNote = note
+        savedDrawing = drawing
+        thumbnailStale = true
+    }
+
+    /// For when the app is about to leave, or something needs the files right now.
     func saveNow() {
         saveTask?.cancel()
         rememberPosition()
-        let drawing = currentDrawing
-        guard note != savedNote || drawing != savedDrawing else { return }
-        do {
-            try FileManager.default.createDirectory(at: library.dir(note.id), withIntermediateDirectories: true)
-            try drawing.dataRepresentation().write(to: library.drawingURL(note.id), options: .atomic)
-            savedDrawing = drawing
-        } catch {
-            message = "Couldn't save your ink: \(error.localizedDescription)"
-        }
-        library.save(note)
-        savedNote = note
-        writeThumbnail()
+        storeChanges()
+        if thumbnailStale { writeThumbnail() }
+        library.flush()
     }
 
     private func writeThumbnail() {
+        thumbnailStale = false
         guard let first = note.pages.first, let image = thumbnail(first, width: 360) else { return }
         try? image.jpegData(compressionQuality: 0.7)?.write(to: library.thumbURL(note.id), options: .atomic)
     }
@@ -831,10 +962,15 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         scheduleSave()
     }
 
-    func exportPDF() -> URL? {
+    func exportPDF() async -> URL? {
         saveNow()
+        busy = "Exporting…"
+        defer { busy = nil }
+        let note = note, drawing = currentDrawing, dir = library.dir(note.id)
         do {
-            return try Renderer.exportPDF(note: note, drawing: currentDrawing, dir: library.dir(note.id))
+            return try await Task.detached(priority: .userInitiated) {
+                try Renderer.exportPDF(note: note, drawing: drawing, dir: dir)
+            }.value
         } catch {
             message = "Export failed: \(error.localizedDescription)"
             return nil
@@ -856,7 +992,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         if inkEdited || note != openedNote { library.snapshot(note.id) }
         if inkEdited { inkChanged = true }
         if !FileManager.default.fileExists(atPath: library.thumbURL(note.id).path) { writeThumbnail() }
-        canvas.undoManager?.removeAllActions()
+        clearHistory()
         if !finishingRecorder { library.endEditing(note.id) }
         indexInBackground()
         let library = library
@@ -864,44 +1000,41 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     private func indexInBackground() {
-        guard inkChanged || note.searchText.isEmpty else { return }
-        let drawing = canvas.drawing, note = note, id = note.id, library = library, dir = library.dir(note.id)
-        let pdfURL = library.pdfURL(id)
+        guard inkChanged || note.searchText.isEmpty, library.beginIndexing(note.id) else { return }
+        let drawing = canvas.drawing, note = note, id = note.id, library = library, pdfURL = library.pdfURL(id)
         Task.detached(priority: .utility) {
             // Reading a long PDF's text takes seconds, so none of it happens on the main thread.
             let doc = PDFDocument(url: pdfURL)
             let pdfText = doc.map(library.pdfText) ?? ""
-            let scanned = note.pages.indices.filter { i in
-                note.pages[i].pdfPage.map { (doc?.page(at: $0)?.string ?? "").isEmpty } ?? false
-            }
-            let rects = Renderer.rects(for: note)
-            let ink = rects.map { Renderer.recognizeInk(drawing, rect: $0) }
-            let scans = scanned.map { i in
-                Renderer.recognize(Renderer.snapshot(note: note, drawing: PKDrawing(), rect: rects[i], dir: dir))
-            }
+            let scans = library.scannedText(of: note, in: doc).values.filter { !$0.isEmpty }
+            let ink = Renderer.rects(for: note).map { rect in autoreleasepool { Renderer.recognizeInk(drawing, rect: rect) } }
             await library.setSearchText(([pdfText] + scans + ink).joined(separator: "\n"), for: id)
         }
     }
 
     /// One string per page, for the assistant. A PDF's printed text is read once and kept, since a long book takes seconds to read.
     func studyPages() async -> [String] {
-        if printedPages == nil {
-            let url = library.pdfURL(note.id), pages = note.pages
-            printedPages = await Task.detached(priority: .userInitiated) {
-                let doc = PDFDocument(url: url)
-                return pages.map { page in page.pdfPage.flatMap { doc?.page(at: $0)?.string } ?? "" }
-            }.value
-        }
-        let printed = printedPages ?? []
         let note = note, drawing = currentDrawing
-        return await Task.detached(priority: .userInitiated) {
+        if let known = studyCache, known.drawing == drawing, known.pages == note.pages, known.elements == note.elements { return known.text }
+        let library = library, url = library.pdfURL(note.id), held = printedPages
+        let (printed, text): ([String], [String]) = await Task.detached(priority: .userInitiated) {
+            let doc = held == nil ? PDFDocument(url: url) : nil
+            let printed = held ?? note.pages.map { page in page.pdfPage.flatMap { doc?.page(at: $0)?.string } ?? "" }
+            let scans = library.scannedText(of: note, in: doc ?? PDFDocument(url: url))
             let rects = Renderer.rects(for: note)
-            return note.pages.indices.map { i in
-                let ink = Renderer.recognizeInk(drawing, rect: rects[i])
-                let typed = note.elements.filter { !$0.isTape && $0.rect.intersects(rects[i]) }.map { $0.comment ?? $0.text }.filter { $0 != "" }
-                return ([i < printed.count ? printed[i] : "", ink] + typed).filter { !$0.isEmpty }.joined(separator: "\n")
+            let text = note.pages.indices.map { i in
+                autoreleasepool {
+                    let ink = Renderer.recognizeInk(drawing, rect: rects[i])
+                    let typed = note.elements.filter { !$0.isTape && $0.rect.intersects(rects[i]) }.map { $0.comment ?? $0.text }.filter { $0 != "" }
+                    let page = printed[i].isEmpty ? note.pages[i].pdfPage.flatMap { scans[$0] } ?? "" : printed[i]
+                    return ([page, ink] + typed).filter { !$0.isEmpty }.joined(separator: "\n")
+                }
             }
+            return (printed, text)
         }.value
+        printedPages = printed
+        studyCache = (drawing, note.pages, note.elements, text)
+        return text
     }
 
     /// The text of a page range, 1-based and inclusive. With no range, the whole note and any transcripts.
@@ -917,21 +1050,21 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     /// The pages most relevant to a question, so a long book can be asked about in seconds.
     func chatContext(for question: String) async -> String {
-        let pages = await studyPages()
-        var passages: [String] = []
-        for (i, text) in pages.enumerated() {
-            for chunk in TextTools.chunks(text, size: 3000) { passages.append("Page \(i + 1):\n\(chunk)") }
-        }
-        if !transcriptText.isEmpty {
-            for chunk in TextTools.chunks(transcriptText, size: 3000) { passages.append("Recording transcript:\n\(chunk)") }
-        }
-        let chosen = TextTools.bestPassages(query: question, passages: passages, limit: 12000)
-        return chosen.map { passages[$0] }.joined(separator: "\n\n")
+        let pages = await studyPages(), spoken = transcriptText
+        return await Task.detached(priority: .userInitiated) {
+            var passages: [String] = []
+            for (i, text) in pages.enumerated() {
+                for chunk in TextTools.chunks(text, size: 3000) { passages.append("Page \(i + 1):\n\(chunk)") }
+            }
+            for chunk in TextTools.chunks(spoken, size: 3000) { passages.append("Recording transcript:\n\(chunk)") }
+            let chosen = TextTools.bestPassages(query: question, passages: passages, limit: 12000)
+            return chosen.map { passages[$0] }.joined(separator: "\n\n")
+        }.value
     }
 
     func digester() -> Digester {
         Digester(cacheURL: library.dir(note.id).appendingPathComponent("digest-cache.json")) { [weak self] done, total in
-            DispatchQueue.main.async {
+            Task { @MainActor [weak self] in
                 self?.aiProgress = "Reading part \(done + 1) of \(total). You can stop anytime; this work is kept."
             }
         }
@@ -944,7 +1077,15 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     // MARK: Recording
 
     func toggleRecording() {
-        if isRecording { stopRecording() } else { Task { await startRecording() } }
+        if isRecording {
+            stopRecording()
+        } else if !startingRecording {
+            startingRecording = true
+            Task {
+                await startRecording()
+                startingRecording = false
+            }
+        }
     }
 
     private func startRecording() async {
@@ -1159,10 +1300,9 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         player?.stop()
         player = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-        lastStrokeCount = realDrawing.strokes.count
         let restored = realDrawing
         playing = nil
-        canvas.drawing = restored
+        setInk(restored)
         applyTool()
     }
 

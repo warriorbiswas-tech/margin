@@ -9,6 +9,8 @@
 struct margin_llm {
     struct llama_model *model;
     struct llama_context *context;
+    llama_token *evaluated; // what the context already holds, so a request sharing its start needn't read that again
+    int32_t evaluated_count;
 };
 
 bool margin_llm_supported(void) { return true; }
@@ -37,6 +39,8 @@ margin_llm *margin_llm_open(const char *model_path, int32_t context_tokens, int3
     margin_llm *llm = malloc(sizeof(margin_llm));
     llm->model = model;
     llm->context = context;
+    llm->evaluated = malloc(sizeof(llama_token) * (size_t)context_tokens);
+    llm->evaluated_count = 0;
     return llm;
 }
 
@@ -44,6 +48,7 @@ void margin_llm_close(margin_llm *llm) {
     if (!llm) return;
     llama_free(llm->context);
     llama_model_free(llm->model);
+    free(llm->evaluated);
     free(llm);
 }
 
@@ -69,7 +74,11 @@ static char *apply_template(const struct llama_model *model, const char *const *
         free(prompt);
         return NULL;
     }
-    prompt[length] = 0;
+    // Opens the answer past this model's reasoning block. Left to itself it can start the block and never close
+    // it, and the reasoning is slow on a tablet without making short answers any better.
+    static const char skip_reasoning[] = "<think>\n\n</think>\n\n";
+    prompt = realloc(prompt, (size_t)length + sizeof(skip_reasoning));
+    memcpy(prompt + length, skip_reasoning, sizeof(skip_reasoning));
     return prompt;
 }
 
@@ -79,9 +88,10 @@ static struct llama_sampler *make_sampler(const struct llama_vocab *vocab, float
         struct llama_sampler *constraint = llama_sampler_init_grammar(vocab, grammar, "root");
         if (constraint) llama_sampler_chain_add(chain, constraint);
     }
-    // Structured answers repeat their keys by design, so a repetition penalty would fight the format.
-    if (!grammar) llama_sampler_chain_add(chain, llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
     llama_sampler_chain_add(chain, llama_sampler_init_top_k(40));
+    // Structured answers repeat their keys by design, so a repetition penalty would fight the format.
+    // It runs after top-k because scanning the whole vocabulary for every token is slow.
+    if (!grammar) llama_sampler_chain_add(chain, llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
     llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.9f, 1));
     llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));
     llama_sampler_chain_add(chain, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
@@ -123,15 +133,26 @@ int32_t margin_llm_generate(margin_llm *llm,
         return margin_error_too_long;
     }
 
-    llama_memory_clear(llama_get_memory(llm->context), true);
+    // Keep what's shared with the last request. The final token is always read again, since sampling needs its output.
+    int32_t kept = 0;
+    while (kept < llm->evaluated_count && kept < token_count - 1 && llm->evaluated[kept] == tokens[kept]) kept++;
+    llama_memory_t memory = llama_get_memory(llm->context);
+    if (kept == 0 || !llama_memory_seq_rm(memory, 0, kept, -1)) {
+        llama_memory_clear(memory, true);
+        kept = 0;
+    }
+    llm->evaluated_count = kept;
 
     const int32_t batch_size = 512;
-    for (int32_t start = 0; start < token_count; start += batch_size) {
+    for (int32_t start = kept; start < token_count; start += batch_size) {
         int32_t count = token_count - start < batch_size ? token_count - start : batch_size;
         if (llama_decode(llm->context, llama_batch_get_one(tokens + start, count)) != 0) {
+            llm->evaluated_count = 0;
             free(tokens);
             return margin_error_decode;
         }
+        memcpy(llm->evaluated + start, tokens + start, sizeof(llama_token) * (size_t)count);
+        llm->evaluated_count = start + count;
     }
     free(tokens);
 
@@ -148,9 +169,11 @@ int32_t margin_llm_generate(margin_llm *llm,
         if (length > 0 && !callback(piece, length, user)) break;
 
         if (llama_decode(llm->context, llama_batch_get_one(&token, 1)) != 0) {
+            llm->evaluated_count = 0;
             result = margin_error_decode;
             break;
         }
+        llm->evaluated[llm->evaluated_count++] = token;
     }
     llama_sampler_free(sampler);
     return result;

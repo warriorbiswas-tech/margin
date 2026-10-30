@@ -11,13 +11,17 @@ final class Library {
     var lastError: String?
     var syncStatus: String?
 
-    @ObservationIgnored private let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    @ObservationIgnored private var notesDir: URL { root.appendingPathComponent("Notes", isDirectory: true) }
+    private nonisolated let root = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    private nonisolated var notesDir: URL { root.appendingPathComponent("Notes", isDirectory: true) }
     @ObservationIgnored var subjectsFile: URL { root.appendingPathComponent("subjects.json") }
     @ObservationIgnored private var editing: Set<UUID> = []
     @ObservationIgnored private var syncing = false
     @ObservationIgnored private var syncAgain = false
     @ObservationIgnored private var syncTask: Task<Void, Never>?
+    @ObservationIgnored private var indexing: Set<UUID> = []
+    @ObservationIgnored private let thumbnails = NSCache<NSString, UIImage>()
+    /// Files are written one at a time off the main thread, because encoding a long note takes long enough to interrupt the pen.
+    private nonisolated let writer = DispatchQueue(label: "margin.save", qos: .userInitiated)
 
     init() {
         try? FileManager.default.createDirectory(at: notesDir, withIntermediateDirectories: true)
@@ -48,7 +52,7 @@ final class Library {
 
     static func positionKey(_ id: UUID) -> String { "position-\(id.uuidString)" }
 
-    func dir(_ id: UUID) -> URL { notesDir.appendingPathComponent(id.uuidString, isDirectory: true) }
+    nonisolated func dir(_ id: UUID) -> URL { notesDir.appendingPathComponent(id.uuidString, isDirectory: true) }
     func drawingURL(_ id: UUID) -> URL { dir(id).appendingPathComponent("drawing.data") }
     func thumbURL(_ id: UUID) -> URL { dir(id).appendingPathComponent("thumb.jpg") }
     func pdfURL(_ id: UUID) -> URL { dir(id).appendingPathComponent("source.pdf") }
@@ -70,23 +74,50 @@ final class Library {
 
     // MARK: Notes
 
-    func save(_ note: Note) {
+    func save(_ note: Note, ink: PKDrawing? = nil, failed: (@MainActor (String) -> Void)? = nil) {
         var note = note
         note.updatedAt = Date()
         // The search index is written behind the editor's back, so its copy may be out of date.
         if let current = notes.first(where: { $0.id == note.id }) { note.searchText = current.searchText }
-        store(note)
+        store(note, ink: ink, failed: failed)
     }
 
-    private func store(_ note: Note) {
+    private func store(_ note: Note, ink: PKDrawing? = nil, failed: (@MainActor (String) -> Void)? = nil) {
+        let folder = dir(note.id), inkFile = drawingURL(note.id)
         do {
-            try FileManager.default.createDirectory(at: dir(note.id), withIntermediateDirectories: true)
-            try JSONEncoder().encode(note).write(to: dir(note.id).appendingPathComponent("note.json"), options: .atomic)
-            if let i = notes.firstIndex(where: { $0.id == note.id }) { notes[i] = note } else { notes.append(note) }
-            syncSoon()
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         } catch {
             lastError = "Couldn't save “\(note.title)”: \(error.localizedDescription)"
+            return
         }
+        if let i = notes.firstIndex(where: { $0.id == note.id }) { notes[i] = note } else { notes.append(note) }
+        writer.async { [weak self] in
+            do {
+                // The ink goes first: note.json is what tells a sync that a note changed.
+                try ink?.dataRepresentation().write(to: inkFile, options: .atomic)
+                try JSONEncoder().encode(note).write(to: folder.appendingPathComponent("note.json"), options: .atomic)
+            } catch {
+                let reason = "Couldn't save “\(note.title)”: \(error.localizedDescription)"
+                Task { @MainActor [weak self] in
+                    if let failed { failed(reason) } else { self?.lastError = reason }
+                }
+            }
+        }
+        syncSoon()
+    }
+
+    /// Returns once everything saved so far is on disk.
+    func flush() { writer.sync {} }
+
+    /// The note's library picture. A long list of cards would otherwise read every file again on each redraw.
+    func thumbnail(for id: UUID) -> UIImage? {
+        let path = thumbURL(id).path
+        guard let changed = (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date else { return nil }
+        let key = "\(id)-\(changed.timeIntervalSinceReferenceDate)" as NSString
+        if let known = thumbnails.object(forKey: key) { return known }
+        let image = UIImage(contentsOfFile: path)
+        if let image { thumbnails.setObject(image, forKey: key) }
+        return image
     }
 
     func createNote(subject: UUID?, title: String? = nil) -> Note {
@@ -96,23 +127,69 @@ final class Library {
         return note
     }
 
-    func appendPDF(_ incoming: PDFDocument, to id: UUID) -> [Page] {
-        let existing = PDFDocument(url: pdfURL(id))
-        let start = existing?.pageCount ?? 0
-        var pages: [Page] = []
-        for i in 0..<incoming.pageCount {
-            guard let page = incoming.page(at: i) else { continue }
-            existing?.insert(page, at: existing?.pageCount ?? 0)
-            var box = page.bounds(for: .cropBox).size
-            if page.rotation % 180 != 0 { box = CGSize(width: box.height, height: box.width) }
-            pages.append(Page(height: NoteLayout.width * box.height / max(box.width, 1), pdfPage: start + pages.count))
-        }
-        // A first import is written as-is, which keeps its table of contents; rebuilding it would drop that.
-        guard (existing ?? incoming).write(to: pdfURL(id)) else {
+    /// A long PDF takes seconds to rewrite, so this happens off the main thread.
+    func appendPDF(_ incoming: PDFDocument, to id: UUID) async -> [Page] {
+        struct Unchecked: @unchecked Sendable { let doc: PDFDocument }
+        let target = pdfURL(id), source = Unchecked(doc: incoming)
+        let pages: [Page]? = await Task.detached(priority: .userInitiated) {
+            let incoming = source.doc
+            let existing = PDFDocument(url: target)
+            let start = existing?.pageCount ?? 0
+            var pages: [Page] = []
+            for i in 0..<incoming.pageCount {
+                guard let page = incoming.page(at: i) else { continue }
+                existing?.insert(page, at: existing?.pageCount ?? 0)
+                var box = page.bounds(for: .cropBox).size
+                if page.rotation % 180 != 0 { box = CGSize(width: box.height, height: box.width) }
+                pages.append(Page(height: NoteLayout.width * box.height / max(box.width, 1), pdfPage: start + pages.count))
+            }
+            // A first import is written as-is, which keeps its table of contents; rebuilding it would drop that.
+            let temp = target.deletingLastPathComponent().appendingPathComponent("incoming.tmp")
+            guard (existing ?? incoming).write(to: temp) else { return nil }
+            do {
+                _ = try FileManager.default.replaceItemAt(target, withItemAt: temp)
+                return pages
+            } catch {
+                do {
+                    try FileManager.default.moveItem(at: temp, to: target)
+                    return pages
+                } catch {
+                    try? FileManager.default.removeItem(at: temp)
+                    return nil
+                }
+            }
+        }.value
+        guard let pages else {
             lastError = "Couldn't save the imported PDF."
             return []
         }
         return pages
+    }
+
+    /// One reader per note at a time; reading a scanned book takes minutes.
+    func beginIndexing(_ id: UUID) -> Bool { indexing.insert(id).inserted }
+
+    /// What's printed on a note's scanned pages, by PDF page. Reading one takes about a second, so results are kept with the note.
+    nonisolated func scannedText(of note: Note, in doc: PDFDocument?, pdfPages wanted: Set<Int>? = nil) -> [Int: String] {
+        guard let doc else { return [:] }
+        let folder = dir(note.id), file = folder.appendingPathComponent("scan-text.json")
+        var known = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([Int: String].self, from: $0) } ?? [:]
+        let rects = Renderer.rects(for: note)
+        var unsaved = 0
+        for (i, page) in note.pages.enumerated() {
+            guard let index = page.pdfPage, wanted?.contains(index) ?? true, known[index] == nil else { continue }
+            autoreleasepool {
+                guard (doc.page(at: index)?.string ?? "").isEmpty else { return }
+                known[index] = Renderer.recognize(Renderer.snapshot(note: note, drawing: PKDrawing(), rect: rects[i], dir: folder))
+                unsaved += 1
+            }
+            if unsaved >= 10 {
+                try? JSONEncoder().encode(known).write(to: file, options: .atomic)
+                unsaved = 0
+            }
+        }
+        if unsaved > 0 { try? JSONEncoder().encode(known).write(to: file, options: .atomic) }
+        return known
     }
 
     nonisolated func pdfText(_ doc: PDFDocument) -> String {
@@ -122,6 +199,7 @@ final class Library {
     func setSearchText(_ text: String, for id: UUID) {
         guard var note = notes.first(where: { $0.id == id }) else { return }
         note.searchText = text
+        indexing.remove(id)
         store(note)
     }
 
@@ -147,6 +225,7 @@ final class Library {
         copy.title = title ?? copy.title + " copy"
         copy.createdAt = Date()
         copy.isTemplate = false
+        flush()
         do {
             try FileManager.default.copyItem(at: dir(id), to: dir(copy.id))
             try? FileManager.default.removeItem(at: versionsDir(copy.id))
@@ -176,7 +255,7 @@ final class Library {
             let doc = try await DocumentConverter.pdf(from: url)
             var note = Note(title: url.deletingPathExtension().lastPathComponent, subjectID: subject)
             try FileManager.default.createDirectory(at: dir(note.id), withIntermediateDirectories: true)
-            note.pages = appendPDF(doc, to: note.id)
+            note.pages = await appendPDF(doc, to: note.id)
             guard !note.pages.isEmpty else { return nil }
             store(note)
             return note
@@ -187,10 +266,11 @@ final class Library {
     }
 
     func deleteForever(_ id: UUID) {
+        flush()
         try? FileManager.default.removeItem(at: dir(id))
         notes.removeAll { $0.id == id }
         UserDefaults.standard.removeObject(forKey: Self.positionKey(id))
-        if Sync.folderName != nil { pendingDeletes.insert(id.uuidString) }
+        if Sync.hasFolder { pendingDeletes.insert(id.uuidString) }
         syncSoon()
     }
 
@@ -219,14 +299,17 @@ final class Library {
         due.card.frontImage.flatMap { UIImage(contentsOfFile: dir(due.noteID).appendingPathComponent($0).path) }
     }
 
-    func context(for question: String) -> String {
-        var passages: [String] = []
-        for note in notes where note.deletedAt == nil && !note.locked {
-            let spoken = note.recordings.flatMap { $0.transcript ?? [] }.map(\.text).joined(separator: " ")
-            let body = ([note.searchText, spoken] + note.elements.map(\.text)).filter { !$0.isEmpty }.joined(separator: "\n")
-            for chunk in TextTools.chunks(body, size: 3000) { passages.append("From \"\(note.title)\":\n\(chunk)") }
-        }
-        return TextTools.bestPassages(query: question, passages: passages, limit: 12000).map { passages[$0] }.joined(separator: "\n\n")
+    func context(for question: String) async -> String {
+        let notes = notes
+        return await Task.detached(priority: .userInitiated) {
+            var passages: [String] = []
+            for note in notes where note.deletedAt == nil && !note.locked {
+                let spoken = note.recordings.flatMap { $0.transcript ?? [] }.map(\.text).joined(separator: " ")
+                let body = ([note.searchText, spoken] + note.elements.map(\.text)).filter { !$0.isEmpty }.joined(separator: "\n")
+                for chunk in TextTools.chunks(body, size: 3000) { passages.append("From \"\(note.title)\":\n\(chunk)") }
+            }
+            return TextTools.bestPassages(query: question, passages: passages, limit: 12000).map { passages[$0] }.joined(separator: "\n\n")
+        }.value
     }
 
     // MARK: Versions
@@ -286,15 +369,18 @@ final class Library {
         var outcome: Sync.Outcome?
         repeat {
             syncAgain = false
-            let notes = notesDir, subjects = subjectsFile, open = Set(editing.map(\.uuidString)), deleted = pendingDeletes
+            let notes = notesDir, subjects = subjectsFile, open = Set(editing.map(\.uuidString)), deleted = pendingDeletes, writer = writer
             do {
-                outcome = try await Task.detached(priority: .utility) { try Sync.run(notes: notes, subjects: subjects, open: open, deleted: deleted) }.value
+                outcome = try await Task.detached(priority: .utility) {
+                    writer.sync {} // what was just saved goes along
+                    return try Sync.run(notes: notes, subjects: subjects, open: open, deleted: deleted)
+                }.value
                 guard let outcome else { return nil }
                 pendingDeletes.subtract(deleted)
                 refresh(after: outcome)
             } catch {
-                syncStatus = "Sync failed: \(error.localizedDescription)"
-                lastError = "Couldn't reach your sync folder: \(error.localizedDescription). Your notes on this iPad are safe."
+                // Worth showing, but never worth interrupting the writing for: the notes on this iPad are safe.
+                syncStatus = "Couldn't reach your sync folder: \(error.localizedDescription)"
                 return nil
             }
         } while syncAgain
@@ -309,7 +395,6 @@ final class Library {
         }
         if let error = outcome.firstError {
             syncStatus = "\(outcome.failed) notes didn't sync: \(error)"
-            lastError = "\(outcome.failed) notes didn't sync: \(error). Your notes on this iPad are safe."
         } else {
             syncStatus = "\(Sync.isInICloud ? "Saved to iCloud" : "Synced") at \(Date().formatted(date: .omitted, time: .shortened))"
         }

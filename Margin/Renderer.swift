@@ -188,12 +188,14 @@ enum Renderer {
         }
         let data = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: NoteLayout.width, height: NoteLayout.paperHeight)).pdfData { ctx in
             for (page, rect) in pairs {
-                ctx.beginPage(withBounds: CGRect(origin: .zero, size: rect.size), pageInfo: [:])
-                // A covered page goes out as a flat image, so the hidden text can't be selected or copied out of the PDF.
-                if note.elements.contains(where: { $0.cover != nil && $0.rect.intersects(rect) }) {
-                    snapshot(note: note, drawing: drawing, rect: rect, dir: dir, scale: 3).draw(in: CGRect(origin: .zero, size: rect.size))
-                } else {
-                    draw(page, rect: rect, note: note, drawing: drawing, pdf: pdf, dir: dir, inkScale: 3, in: ctx.cgContext)
+                autoreleasepool {
+                    ctx.beginPage(withBounds: CGRect(origin: .zero, size: rect.size), pageInfo: [:])
+                    // A covered page goes out as a flat image, so the hidden text can't be selected or copied out of the PDF.
+                    if note.elements.contains(where: { $0.cover != nil && $0.rect.intersects(rect) }) {
+                        snapshot(note: note, drawing: drawing, rect: rect, dir: dir, scale: 3).draw(in: CGRect(origin: .zero, size: rect.size))
+                    } else {
+                        draw(page, rect: rect, note: note, drawing: drawing, pdf: pdf, dir: dir, inkScale: 3, in: ctx.cgContext)
+                    }
                 }
             }
         }

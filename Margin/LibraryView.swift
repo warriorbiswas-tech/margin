@@ -27,6 +27,7 @@ struct LibraryView: View {
     @State private var pendingSetup: NoteSetup?
     @State private var creating = false
     @State private var deleting: Note?
+    @State private var importingDocument = false
     @AppStorage("iCloudBannerDismissed") private var bannerDismissed = false
 
     struct TextPrompt {
@@ -79,6 +80,13 @@ struct LibraryView: View {
                 grid
             }
         }
+        .overlay {
+            if importingDocument {
+                ProgressView("Importing…")
+                    .padding(20)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            }
+        }
         .onAppear { resumeLastNote() }
         .fullScreenCover(item: $editor) { model in
             EditorView(model: model) {
@@ -121,8 +129,11 @@ struct LibraryView: View {
     }
 
     private func importDocument(_ url: URL) {
+        importingDocument = true
         Task {
-            if let note = await library.importDocument(from: url, subject: currentSubject) { open(note) }
+            let note = await library.importDocument(from: url, subject: currentSubject)
+            importingDocument = false
+            if let note { open(note) }
         }
     }
 
@@ -235,11 +246,12 @@ struct LibraryView: View {
 
     private var grid: some View {
         VStack(spacing: 0) {
-            if Sync.folderName == nil, !bannerDismissed {
+            let notes = visibleNotes
+            if !Sync.hasFolder, !bannerDismissed {
                 ICloudBanner(library: library) { bannerDismissed = true }
                     .padding([.horizontal, .top], 24)
             }
-            if visibleNotes.isEmpty {
+            if notes.isEmpty {
                 if search.isEmpty {
                     ContentUnavailableView {
                         Label(shelf == .trash ? "Nothing Deleted" : "No Notes", systemImage: shelf == .trash ? "trash" : "note.text")
@@ -252,7 +264,7 @@ struct LibraryView: View {
             } else {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 170, maximum: 230), spacing: 22)], spacing: 26) {
-                        ForEach(visibleNotes) { note in
+                        ForEach(notes) { note in
                             NoteCard(note: note, library: library)
                                 .onTapGesture {
                                     if note.deletedAt == nil { open(note) }
@@ -395,20 +407,19 @@ struct NoteCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Group {
-                if note.locked {
-                    ZStack {
-                        Color.secondary.opacity(0.14)
-                        Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
+            // Every card is the same shape, whatever the page's, so a row of notes lines up.
+            Color.white
+                .aspectRatio(8.5 / 11, contentMode: .fit)
+                .overlay(alignment: .top) {
+                    if note.locked {
+                        ZStack {
+                            Color(.secondarySystemBackground)
+                            Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
+                        }
+                    } else if let image = library.thumbnail(for: note.id) {
+                        Image(uiImage: image).resizable().scaledToFill()
                     }
-                } else if let image = UIImage(contentsOfFile: library.thumbURL(note.id).path) {
-                    Image(uiImage: image).resizable().scaledToFill()
-                } else {
-                    Color.white
                 }
-            }
-            .frame(maxWidth: .infinity, alignment: .top)
-            .aspectRatio(8.5 / 11, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(.separator))
             .shadow(color: .black.opacity(0.12), radius: 6, y: 3)

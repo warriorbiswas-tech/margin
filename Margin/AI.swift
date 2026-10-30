@@ -38,11 +38,11 @@ struct ModelFile: Sendable {
     )
 
     static let speech = ModelFile(
-        name: "ggml-base.en.bin",
+        name: "ggml-small.en-q5_1.bin",
         title: "Transcription Model",
-        url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")!,
-        bytes: 147_964_211,
-        sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002"
+        url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en-q5_1.bin")!,
+        bytes: 190_098_681,
+        sha256: "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30"
     )
 }
 
@@ -52,15 +52,10 @@ final class LocalLLM: @unchecked Sendable {
     static let contextTokens: Int32 = 8192
 
     private let queue = DispatchQueue(label: "margin.llm", qos: .userInitiated)
-    private let queueKey = DispatchSpecificKey<Void>()
     private var handle: OpaquePointer?
     private let stateLock = NSLock()
     private var current: Run?
     private var inBackground = false
-
-    init() {
-        queue.setSpecific(key: queueKey, value: ())
-    }
 
     /// Called as the app enters and leaves the screen. Ends any answer in progress before iOS revokes the GPU.
     func setInBackground(_ background: Bool) {
@@ -78,17 +73,27 @@ final class LocalLLM: @unchecked Sendable {
         init(onPartial: (@Sendable (String) -> Void)?) { self.onPartial = onPartial }
     }
 
-    /// Frees the model's memory; it reloads on the next request.
+    /// Frees the model's memory; it reloads on the next request. Never waits, because loading the model
+    /// takes longer than iOS lets the main thread stall before it kills the app.
     func unload() {
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
+        queue.async { [self] in
             margin_llm_close(handle)
             handle = nil
-        } else {
-            queue.sync { [self] in
-                margin_llm_close(handle)
-                handle = nil
-            }
         }
+    }
+
+    /// Loads the model ahead of the first question, so the answer doesn't have to wait for it.
+    func warmUp() {
+        guard ModelFile.writing.isInstalled, margin_llm_supported() else { return }
+        queue.async { [self] in
+            guard handle == nil, !stateLock.withLock({ inBackground }) else { return }
+            handle = open()
+        }
+    }
+
+    private func open() -> OpaquePointer? {
+        let threads = Int32(max(ProcessInfo.processInfo.activeProcessorCount - 2, 2))
+        return margin_llm_open(ModelFile.writing.path.path, Self.contextTokens, threads)
     }
 
     func generate(messages: [(role: String, text: String)], maxTokens: Int32, grammar: String?, onPartial: (@Sendable (String) -> Void)?) async throws -> String {
@@ -115,10 +120,7 @@ final class LocalLLM: @unchecked Sendable {
         }
         defer { stateLock.withLock { current = nil } }
         guard allowed else { throw CancellationError() }
-        if handle == nil {
-            let threads = Int32(max(ProcessInfo.processInfo.activeProcessorCount - 2, 2))
-            handle = margin_llm_open(ModelFile.writing.path.path, Self.contextTokens, threads)
-        }
+        if handle == nil { handle = open() }
         guard let handle else {
             throw AIError.failed
         }
@@ -219,11 +221,7 @@ enum AI {
     private static let chunkCharacters = 20_000
 
     static func complete(system: String, messages: [(role: String, text: String)], maxTokens: Int32 = 1200, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
-        var turns: [(role: String, text: String)] = [("system", system)]
-        turns += messages
-        // The "/no_think" switch skips this model's reasoning preamble, which would only slow it down here.
-        if let last = turns.indices.last { turns[last].text += " /no_think" }
-        return try await LocalLLM.shared.generate(messages: turns, maxTokens: maxTokens, grammar: nil, onPartial: onPartial)
+        try await LocalLLM.shared.generate(messages: [("system", system)] + messages, maxTokens: maxTokens, grammar: nil, onPartial: onPartial)
     }
 
     static func complete(system: String, prompt: String, maxTokens: Int32 = 1200, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
@@ -231,7 +229,7 @@ enum AI {
     }
 
     private static func json<T: Decodable>(_ type: T.Type, grammar: String, system: String, prompt: String, maxTokens: Int32) async throws -> T {
-        let turns: [(role: String, text: String)] = [("system", system), ("user", prompt + " /no_think")]
+        let turns: [(role: String, text: String)] = [("system", system), ("user", prompt)]
         let reply = try await LocalLLM.shared.generate(messages: turns, maxTokens: maxTokens, grammar: grammar, onPartial: nil)
         guard let data = TextTools.jsonArray(in: reply), let value = try? JSONDecoder().decode(T.self, from: data) else {
             throw AIError.badResponse
@@ -276,7 +274,7 @@ enum AI {
 
     static func summary(of text: String, using digester: Digester? = nil, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
         let notes = try await digest(text, using: digester)
-        return try await complete(system: "Summarize study notes as short, clear bullet points grouped by topic. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
+        return try await complete(system: "Summarize study notes as short, clear bullet points grouped by topic, keeping every definition, name and number that matters. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
     }
 
     static func flashcards(from text: String, count: Int = 10, using digester: Digester? = nil) async throws -> [(front: String, back: String)] {
@@ -326,7 +324,7 @@ enum AI {
 
     /// `context` is the handful of passages picked for the question, labelled so answers can name their page.
     static func chatSystem(context: String) -> String {
-        "You answer questions using the passages from the user's notes. Say which page an answer comes from when a page is given, and say plainly when the answer isn't in them. Be concise. \(notesRule)\n\n<notes>\n\(context)\n</notes>"
+        "You answer questions using only the passages from the user's notes. When a passage is labelled with a page, name that page in the answer. If the passages don't contain the answer, say so plainly instead of guessing. Be concise. \(notesRule)\n\n<notes>\n\(context)\n</notes>"
     }
 
     static func translate(_ text: String, to language: String) async throws -> String {
@@ -344,7 +342,8 @@ enum AI {
     }
 
     static func solve(_ text: String) async throws -> String {
-        let raw = try await complete(system: "Solve the math, which was read from handwriting by imperfect recognition. Reply with only the final answer in plain Unicode text. Do not include any explanations, working, steps, or markdown.", prompt: text, maxTokens: 100)
+        // A small model gets math wrong when made to answer at once, so it works first and only the last line is kept.
+        let raw = try await complete(system: "Solve the math, which was read from handwriting by imperfect recognition. Work through it in short steps, then end with one line: Final answer: followed by the result in plain Unicode text.", prompt: text, maxTokens: 500)
         return TextTools.cleanMathAnswer(raw)
     }
 }

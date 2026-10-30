@@ -56,6 +56,16 @@ await attempt("chat follow-up") {
     let system = AI.chatSystem(context: notes)
     return try await AI.complete(system: system, messages: [("user", "How many cells does meiosis produce?"), ("assistant", "Four."), ("user", "And mitosis?")])
 }
+await attempt("same long question again, reusing what the model already read") {
+    let system = AI.chatSystem(context: String(repeating: notes + "\n", count: 12))
+    let first = Date()
+    _ = try await AI.complete(system: system, messages: [("user", "How many cells does meiosis produce?")], maxTokens: 20)
+    let cold = Date().timeIntervalSince(first)
+    let second = Date()
+    _ = try await AI.complete(system: system, messages: [("user", "How many cells does meiosis produce?")], maxTokens: 20)
+    let warm = Date().timeIntervalSince(second)
+    return String(format: "first %.2fs, again %.2fs", cold, warm)
+}
 await attempt("not in notes") {
     let system = AI.chatSystem(context: notes)
     return try await AI.complete(system: system, messages: [("user", "Who won the 2018 World Cup according to my notes?")])

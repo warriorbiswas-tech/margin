@@ -43,7 +43,7 @@ extension EditorModel {
         let edits = textEdits(crossing: area)
         guard !edits.isEmpty else { return }
         if !eraserUndoRegistered {
-            registerStateUndo()
+            checkpoint()
             eraserUndoRegistered = true
         }
         apply(edits)
@@ -60,9 +60,7 @@ extension EditorModel {
         let edits = textEdits(crossing: area)
         guard kept.count < strokes.count - 1 || !edits.isEmpty else { return false } // covered nothing, so it's just a mark
 
-        registerStateUndo()
-        lastStrokeCount = kept.count
-        canvas.drawing = PKDrawing(strokes: Array(kept))
+        setInk(PKDrawing(strokes: Array(kept)))
         apply(edits)
         liveSince = max(liveSince, stroke.path.creationDate)
         syncElements()
@@ -70,40 +68,58 @@ extension EditorModel {
         return true
     }
 
+    /// Reading a page's words takes long enough to catch the next stroke, so it happens off the main thread.
     func snapHighlight(_ stroke: PKStroke) {
-        var strokes = canvas.drawing.strokes
         let heights = note.pages.map(\.height)
         let index = NoteLayout.pageIndex(y: stroke.renderBounds.midY, heights: heights)
-        guard strokes.last?.path.creationDate == stroke.path.creationDate,
-              note.pages.indices.contains(index), let pdfIndex = note.pages[index].pdfPage,
-              let doc = PDFDocument(url: library.pdfURL(note.id)), let page = doc.page(at: pdfIndex),
-              let first = stroke.path.first?.location, let last = stroke.path.last?.location else { return }
+        guard note.pages.indices.contains(index), let pdfIndex = note.pages[index].pdfPage,
+              let first = stroke.path.first?.location.applying(stroke.transform),
+              let last = stroke.path.last?.location.applying(stroke.transform) else { return }
+        let origin = NoteLayout.origins(heights)[index], url = library.pdfURL(note.id), pageID = note.pages[index].id
+        let mark = highlightMark, date = stroke.path.creationDate
 
-        let origin = NoteLayout.origins(heights)[index]
+        Task { [weak self] in
+            let found = await Task.detached(priority: .userInitiated) {
+                Self.selectedWords(in: url, page: pdfIndex, from: first, to: last, pageTop: origin)
+            }.value
+            guard let self, let found else { return }
+            let strokes = self.canvas.drawing.strokes
+            guard strokes.contains(where: { $0.path.creationDate == date }) else { return } // undone in the meantime
+            self.note.excerpts.append(Excerpt(text: found.text, pageID: pageID, rect: stroke.renderBounds))
+            // A highlight stays exactly as drawn, while underlines and the like only make sense along the words.
+            if mark != .highlight || Prefs.snapHighlights {
+                self.placeMark(mark, along: found.lines, replacing: stroke, in: strokes)
+            }
+            self.scheduleSave()
+        }
+    }
+
+    private nonisolated static func selectedWords(in url: URL, page pdfIndex: Int, from first: CGPoint, to last: CGPoint, pageTop origin: CGFloat) -> (text: String, lines: [CGRect])? {
+        guard let page = PDFDocument(url: url)?.page(at: pdfIndex) else { return nil }
         let toBox = page.transform(for: .cropBox), fromBox = toBox.inverted()
-        let box = pageBox(page)
+        var box = page.bounds(for: .cropBox).size
+        if page.rotation % 180 != 0 { box = CGSize(width: box.height, height: box.width) }
         let scale = NoteLayout.width / max(box.width, 1)
-
         func toPDF(_ p: CGPoint) -> CGPoint {
-            let q = p.applying(stroke.transform)
-            return CGPoint(x: q.x / scale, y: box.height - (q.y - origin) / scale).applying(fromBox)
+            CGPoint(x: p.x / scale, y: box.height - (p.y - origin) / scale).applying(fromBox)
         }
         guard let selection = page.selection(from: toPDF(first), to: toPDF(last)),
-              !(selection.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-
-        let text = selection.selectionsByLine().compactMap(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        let excerpt = Excerpt(text: text, pageID: note.pages[index].id, rect: stroke.renderBounds)
-        let mark = highlightMark
-        // A highlight stays exactly as drawn, while underlines and the like only make sense along the words.
-        guard mark != .highlight || Prefs.snapHighlights else {
-            note.excerpts.append(excerpt)
-            return
-        }
-        let lines: [PKStroke] = selection.selectionsByLine().compactMap { line in
+              !(selection.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let byLine = selection.selectionsByLine()
+        let text = byLine.compactMap(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines: [CGRect] = byLine.compactMap { line in
             let r = line.bounds(for: page).applying(toBox)
             guard r.width > 1 else { return nil }
-            let top = origin + (box.height - r.maxY) * scale, height = r.height * scale
-            let left = r.minX * scale, right = r.maxX * scale
+            return CGRect(x: r.minX * scale, y: origin + (box.height - r.maxY) * scale, width: r.width * scale, height: r.height * scale)
+        }
+        return (text, lines)
+    }
+
+    private func placeMark(_ mark: HighlightMark, along rects: [CGRect], replacing stroke: PKStroke, in current: [PKStroke]) {
+        var strokes = current
+        guard strokes.last?.path.creationDate == stroke.path.creationDate else { return }
+        let lines: [PKStroke] = rects.map { r in
+            let top = r.minY, height = r.height, left = r.minX, right = r.maxX
             let date = stroke.path.creationDate
             func make(_ ink: PKInk, _ path: [CGPoint], size: CGFloat) -> PKStroke {
                 let points = path.enumerated().map { i, p in
@@ -127,12 +143,9 @@ extension EditorModel {
             }
         }
         guard !lines.isEmpty else { return }
-        registerStateUndo()
         strokes.removeLast()
         strokes += lines
-        lastStrokeCount = strokes.count
-        canvas.drawing = PKDrawing(strokes: strokes)
-        note.excerpts.append(excerpt)
+        setInk(PKDrawing(strokes: strokes))
     }
 
     // MARK: Area actions
@@ -187,7 +200,7 @@ extension EditorModel {
     }
 
     func addLink(title: String, target: String) {
-        registerStateUndo()
+        checkpoint()
         tool = .text
         let c = visibleCenter()
         var el = Element(rect: CGRect(x: max(c.x - 150, 8), y: c.y, width: 300, height: 30), text: title, fontSize: 18, colorHex: "0A66D8")
@@ -328,12 +341,31 @@ extension EditorModel {
         }
     }
 
+    func pdfOutline() async -> [OutlineItem] {
+        let url = library.pdfURL(note.id), pages = note.pages
+        return await Task.detached(priority: .userInitiated) {
+            guard let doc = PDFDocument(url: url), let root = doc.outlineRoot else { return [] }
+            let pageForPDF = Dictionary(pages.enumerated().compactMap { i, page in page.pdfPage.map { ($0, i) } }, uniquingKeysWith: { first, _ in first })
+            var items: [OutlineItem] = []
+            func walk(_ node: PDFOutline, depth: Int) {
+                for i in 0..<node.numberOfChildren {
+                    guard let child = node.child(at: i) else { continue }
+                    if let page = child.destination?.page, let index = pageForPDF[doc.index(for: page)] {
+                        items.append(OutlineItem(title: child.label ?? "Untitled", depth: depth, pageIndex: index))
+                    }
+                    walk(child, depth: depth + 1)
+                }
+            }
+            walk(root, depth: 0)
+            return items
+        }.value
+    }
+
     private func removeInk(in rect: CGRect) {
         let strokes = canvas.drawing.strokes.filter {
             !rect.contains(CGPoint(x: $0.renderBounds.midX, y: $0.renderBounds.midY))
         }
-        lastStrokeCount = strokes.count
-        canvas.drawing = PKDrawing(strokes: strokes)
+        setInk(PKDrawing(strokes: strokes))
     }
 
     private func addText(_ text: String, at rect: CGRect) {
@@ -380,13 +412,14 @@ extension EditorModel {
         }.value
         let lines = found.filter { $0.confidence >= minimumConfidence && !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
         guard !lines.isEmpty else { return false }
-
+        // The pen may have come down, or the ink been undone, while this was being read. Replacing the drawing now would lose a stroke.
+        if live, penDown { return false }
         let color = strokes.first?.ink.color.withAlphaComponent(1).hex ?? textColor.hex
         let dates = Set(strokes.map(\.path.creationDate))
-        registerStateUndo()
+        guard canvas.drawing.strokes.contains(where: { dates.contains($0.path.creationDate) }) else { return false }
+        checkpoint()
         let kept = canvas.drawing.strokes.filter { !dates.contains($0.path.creationDate) }
-        lastStrokeCount = kept.count
-        canvas.drawing = PKDrawing(strokes: kept)
+        setInk(PKDrawing(strokes: kept))
         for line in lines {
             let rect = CGRect(x: area.minX + line.box.minX * area.width,
                               y: area.minY + (1 - line.box.maxY) * area.height,
@@ -433,7 +466,7 @@ extension EditorModel {
 
     /// A new text box for Scribble, starting where the Pencil came down and running to the page edge.
     func addLiveTextBox(at point: CGPoint) -> Element {
-        registerStateUndo()
+        checkpoint()
         let size = liveSize > 0 ? CGFloat(liveSize) : 22
         let x = max(min(point.x, NoteLayout.width - 120), 0)
         var el = Element(rect: CGRect(x: x, y: point.y - size * 0.7, width: NoteLayout.width - x - 12, height: 30),
@@ -504,14 +537,14 @@ extension EditorModel {
         case .box: addInk(.rectangle(rect))
         case .oval: addInk(.ellipse(rect))
         case .area:
-            registerStateUndo()
+            checkpoint()
             let size = CGSize(width: rect.height, height: rect.height)
             let points = [rect.minX, rect.maxX].enumerated().map { i, x in
                 PKStrokePoint(location: CGPoint(x: x, y: rect.midY), timeOffset: Double(i) * 0.05, size: size, opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
             }
             appendStroke(PKStroke(ink: PKInk(.marker, color: highlightInk), path: PKStrokePath(controlPoints: points, creationDate: Date())))
         case .whiteout, .redact:
-            registerStateUndo()
+            checkpoint()
             note.elements.append(Element(rect: rect, cover: annotateKind == .redact ? "redact" : "whiteout"))
             syncElements()
             scheduleSave()
@@ -521,7 +554,7 @@ extension EditorModel {
     }
 
     private func addInk(_ shape: SnappedShape) {
-        registerStateUndo()
+        checkpoint()
         let points = ShapeSnap.outline(shape).enumerated().map { i, p in
             PKStrokePoint(location: p, timeOffset: Double(i) * 0.01, size: CGSize(width: 2.5, height: 2.5), opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
         }
@@ -530,13 +563,12 @@ extension EditorModel {
 
     private func appendStroke(_ stroke: PKStroke) {
         let strokes = canvas.drawing.strokes + [stroke]
-        lastStrokeCount = strokes.count
-        canvas.drawing = PKDrawing(strokes: strokes)
+        setInk(PKDrawing(strokes: strokes))
         scheduleSave()
     }
 
     func addComment(at point: CGPoint) {
-        registerStateUndo()
+        checkpoint()
         let el = Element(rect: CGRect(x: point.x - 16, y: point.y - 16, width: 34, height: 34), text: "💬", fontSize: 24, comment: "")
         note.elements.append(el)
         syncElements()
@@ -555,7 +587,7 @@ extension EditorModel {
     }
 
     func addStamp(_ text: String, colorHex: String) {
-        registerStateUndo()
+        checkpoint()
         tool = .text
         let c = visibleCenter()
         var el = Element(rect: CGRect(x: 0, y: c.y, width: 100, height: 40), text: text, fontSize: 22, colorHex: colorHex, bold: true, stamp: true)
@@ -610,7 +642,7 @@ extension EditorModel {
                 UIPasteboard.general.string = math.latex
                 notify("Converted. The LaTeX is on your clipboard.")
             }
-            registerStateUndo()
+            checkpoint()
             removeInk(in: rect)
             addText(clean, at: rect)
             regionRect = nil
@@ -629,7 +661,7 @@ extension EditorModel {
                 message = "Couldn't read that as a calculation. It read as: \(text.isEmpty ? "(nothing)" : text)"
                 return
             }
-            registerStateUndo()
+            checkpoint()
             addText("= \(answer)", at: CGRect(x: min(rect.maxX + 8, NoteLayout.width - 208), y: rect.midY - 14, width: 200, height: 30))
             regionRect = nil
         }
@@ -644,7 +676,7 @@ extension EditorModel {
                 return
             }
             let translation = try await AI.translate(text, to: language)
-            registerStateUndo()
+            checkpoint()
             addText(translation, at: CGRect(x: rect.minX, y: rect.maxY + 8, width: max(rect.width, 200), height: 30))
             regionRect = nil
         }
@@ -734,7 +766,7 @@ extension EditorModel {
     // MARK: Text, stickers, sticky notes
 
     func insertText(_ text: String) {
-        registerStateUndo()
+        checkpoint()
         let c = visibleCenter()
         let rect = CGRect(x: 48, y: max(c.y - 200, 8), width: NoteLayout.width - 96, height: 30)
         // Over a PDF's own text, only a filled note stays readable.
@@ -747,13 +779,13 @@ extension EditorModel {
     }
 
     func addSticker(_ emoji: String) {
-        registerStateUndo()
+        checkpoint()
         let c = visibleCenter()
         addTextElement(Element(rect: CGRect(x: c.x - 48, y: c.y - 48, width: 96, height: 96), text: emoji, fontSize: 72))
     }
 
     func addStickyNote() {
-        registerStateUndo()
+        checkpoint()
         let c = visibleCenter()
         tool = .text
         addTextElement(Element(rect: CGRect(x: c.x - 120, y: c.y - 70, width: 240, height: 140), text: "Note", fontSize: 18, colorHex: "1C1C1E", fillHex: "FFE98A"))
@@ -770,7 +802,7 @@ extension EditorModel {
     // MARK: Study tape
 
     func addTape(_ rect: CGRect) {
-        registerStateUndo()
+        checkpoint()
         note.elements.append(Element(rect: rect, colorHex: UserDefaults.standard.string(forKey: "tapeColor") ?? "5B8DEF", isTape: true))
         syncElements()
         scheduleSave()
@@ -783,7 +815,7 @@ extension EditorModel {
     }
 
     func removeAllTape() {
-        registerStateUndo()
+        checkpoint()
         note.elements.removeAll(where: \.isTape)
         syncElements()
         scheduleSave()
@@ -831,40 +863,23 @@ extension EditorModel {
         let pageIndex: Int
     }
 
-    func pdfOutline() -> [OutlineItem] {
-        guard let doc = PDFDocument(url: library.pdfURL(note.id)), let root = doc.outlineRoot else { return [] }
-        var items: [OutlineItem] = []
-        func walk(_ node: PDFOutline, depth: Int) {
-            for i in 0..<node.numberOfChildren {
-                guard let child = node.child(at: i) else { continue }
-                if let page = child.destination?.page,
-                   let index = note.pages.firstIndex(where: { $0.pdfPage == doc.index(for: page) }) {
-                    items.append(OutlineItem(title: child.label ?? "Untitled", depth: depth, pageIndex: index))
-                }
-                walk(child, depth: depth + 1)
-            }
-        }
-        walk(root, depth: 0)
-        return items
-    }
-
     // MARK: Find
 
     func pageTexts() async -> [String] {
-        let note = note, drawing = currentDrawing, dir = library.dir(note.id)
+        let note = note, drawing = currentDrawing, library = library
         let pdfURL = library.pdfURL(note.id)
         return await Task.detached {
             let doc = PDFDocument(url: pdfURL)
             let printed = note.pages.map { page in page.pdfPage.flatMap { doc?.page(at: $0)?.string } ?? "" }
+            let scans = library.scannedText(of: note, in: doc)
             let rects = Renderer.rects(for: note)
             return note.pages.indices.map { i in
-                var text = printed[i]
-                if text.isEmpty, note.pages[i].pdfPage != nil {
-                    text = Renderer.recognize(Renderer.snapshot(note: note, drawing: PKDrawing(), rect: rects[i], dir: dir))
+                autoreleasepool {
+                    let text = printed[i].isEmpty ? note.pages[i].pdfPage.flatMap { scans[$0] } ?? "" : printed[i]
+                    let ink = Renderer.recognizeInk(drawing, rect: rects[i])
+                    let typed = note.elements.filter { $0.rect.intersects(rects[i]) }.map(\.text).joined(separator: "\n")
+                    return [text, ink, typed].joined(separator: "\n")
                 }
-                let ink = Renderer.recognizeInk(drawing, rect: rects[i])
-                let typed = note.elements.filter { $0.rect.intersects(rects[i]) }.map(\.text).joined(separator: "\n")
-                return [text, ink, typed].joined(separator: "\n")
             }
         }.value
     }
@@ -881,9 +896,8 @@ extension EditorModel {
         var restored = saved.note
         restored.id = note.id
         note = restored
-        lastStrokeCount = saved.drawing.strokes.count
-        canvas.drawing = saved.drawing
-        canvas.undoManager?.removeAllActions()
+        setInk(saved.drawing)
+        clearHistory()
         selectedElementID = nil
         rebuildPages()
         syncElements()

@@ -104,16 +104,9 @@ let cursive = (0...120).map { i -> CGPoint in
 check(!Scribble.isScribble(cursive), "writing along a line is not")
 check(!Scribble.isScribble(wobblyLine), "a line is not")
 
-// Transcript phrases
-let words: [(text: String, time: TimeInterval, duration: TimeInterval)] = [("a", 0, 0.2), ("b", 0.3, 0.2), ("c", 3, 0.2)]
-let phrases = TranscriptGroup.lines(words, offset: 10)
-check(phrases.count == 2 && phrases[0].text == "a b" && phrases[1].time == 13, "pause breaks a phrase, offset applied")
-check(TranscriptGroup.lines([]).isEmpty, "no words, no lines")
-
 // Text helpers
 check(TextTools.jsonArray(in: "Sure!\n```json\n[{\"a\":1}]\n```") == "[{\"a\":1}]".data(using: .utf8), "array out of fences")
 check(TextTools.jsonArray(in: "no json") == nil, "no array")
-check(TextTools.score(query: "what is mitosis", in: "Mitosis divides cells") == 1, "matches words, skips short ones")
 
 check(TextTools.visibleAnswer("<think>\n\n</think>\n\nHello") == "Hello", "finished reasoning is removed")
 check(TextTools.visibleAnswer("<think>still going") == "", "unfinished reasoning shows nothing")
@@ -135,18 +128,43 @@ check(cut > 12000 && cut <= 12640, "cuts in the pause")
 check(TextTools.quietCut([0.1, 0.2], searchingLast: 100) == 2, "too short to search")
 
 check(TextTools.cleanMathAnswer("42") == "42", "plain number answer")
+check(TextTools.cleanMathAnswer("Steps\nFinal answer: 📌 9") == "9", "stray emoji come off")
 check(TextTools.cleanMathAnswer("The answer is:\n\nFinal answer: `9`") == "9", "extracts final answer with backticks")
 check(TextTools.cleanMathAnswer("$$\n\\int 2x dx = 9\n$$\nFinal Answer: 9") == "9", "extracts final answer from math explanation")
 
 // Finding the right pages in a long document
 let book = ["Intro to the course", "Mitosis divides cells. Mitosis has stages.", "", "Photosynthesis in plants", "More on mitosis"]
 let found = TextTools.bestPassages(query: "what is mitosis", passages: book, limit: 60)
-check(found.first == 1 && found.contains(4) && !found.contains(3), "picks the matching pages, best first")
+check(found.contains(1) && found.contains(4) && !found.contains(3), "picks the matching pages")
+check(TextTools.bestPassages(query: "mitosis", passages: ["mitosis and plants and rivers", "mitosis and mitosis and mitosis"], limit: 30).first == 1, "more mentions rank higher")
 check(!TextTools.bestPassages(query: "zebra", passages: book, limit: 20).isEmpty, "no match still gives something to read")
 check(!TextTools.bestPassages(query: "zebra", passages: book, limit: 1000).contains(2), "empty pages are skipped")
 check(TextTools.bestPassages(query: "x", passages: [], limit: 10).isEmpty, "no pages, no passages")
 check(TextTools.bestPassages(query: "mitosis", passages: [String(repeating: "mitosis ", count: 100)], limit: 10) == [0], "the best page is kept even if it's over the limit")
 check(TextTools.withoutOptionLabel("A. Paris") == "Paris" && TextTools.withoutOptionLabel("B) Rome") == "Rome", "option labels come off")
 check(TextTools.withoutOptionLabel("Paris") == "Paris", "plain options stay")
+
+// A rare word outranks a common one, and word endings don't matter
+let rarity = ["cells cells cells cells in the body", "cells and mitochondria", "cells of the skin", "cells of the liver"]
+check(TextTools.bestPassages(query: "what do mitochondria do in cells", passages: rarity, limit: 10).first == 1, "the rare word decides")
+check(TextTools.bestPassages(query: "dividing", passages: ["plants grow", "a cell divides in two"], limit: 10).first == 1, "stems match")
+
+// Text the model writes
+check(TextTools.plain("## Topic\n- **Bold** point") == "Topic\n•  Bold point", "markers come off")
+check(TextTools.plain("2 * 3 = 6") == "2 * 3 = 6", "a lone asterisk is just a character")
+
+// Undo and redo
+var history = History<Int>(limit: 3)
+check(history.undo(from: 0) == nil && !history.canUndo, "nothing to undo at first")
+history.record(0)
+history.record(0)
+check(history.undo(from: 1) == 0 && !history.canUndo, "the same state isn't recorded twice")
+check(history.redo(from: 0) == 1 && !history.canRedo, "redo returns what undo left")
+history.record(1)
+check(!history.canRedo, "a new change ends redo")
+check(history.undo(from: 1) == 0, "a step that would change nothing is skipped")
+var capped = History<Int>(limit: 2)
+for state in 1...3 { capped.record(state) }
+check(capped.undo(from: 4) == 3 && capped.undo(from: 3) == 2 && capped.undo(from: 2) == nil, "only the newest steps are kept")
 
 print("ok")

@@ -119,6 +119,7 @@
 			);
 			inputPaths = (
 			);
+			alwaysOutOfDate = 1;
 			name = "Embed AI Engines";
 			outputPaths = (
 			);

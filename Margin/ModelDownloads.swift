@@ -21,6 +21,8 @@ final class ModelDownloads: NSObject {
 
     override private init() {
         super.init()
+        // The smaller transcription model it replaced.
+        try? FileManager.default.removeItem(at: ModelFile.directory.appendingPathComponent("ggml-base.en.bin"))
         let configuration = URLSessionConfiguration.background(withIdentifier: "margin.models")
         configuration.isDiscretionary = false
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: .main)

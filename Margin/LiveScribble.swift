@@ -23,6 +23,7 @@ import UIKit
     }
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, willBeginWritingInElement elementIdentifier: String) {
+        model?.checkpoint() // each burst of writing is its own undo step
         model?.scribbleConfirmed = true
         model?.lastPencilActivity = Date() // writing again, so any pending check is out of date
     }
@@ -53,20 +54,13 @@ import UIKit
             return
         }
         if let el = model.note.elements.first(where: { $0.id.uuidString == elementIdentifier }) {
-            model.registerStateUndo()
             completion(model.overlay.focusForScribble(el))
         } else {
             if let id = model.freshScribbleBoxID, id == model.editingElementID, let el = model.note.elements.first(where: { $0.id == id }) {
                 completion(model.overlay.focusForScribble(el))
                 return
             }
-            let el: Element
-            if let line = model.liveTextBox(continuing: focusReferencePoint) {
-                model.registerStateUndo() // each burst of writing is its own undo step
-                el = line
-            } else {
-                el = model.addLiveTextBox(at: focusReferencePoint)
-            }
+            let el = model.liveTextBox(continuing: focusReferencePoint) ?? model.addLiveTextBox(at: focusReferencePoint)
             let editor = model.overlay.focusForScribble(el)
             model.freshScribbleBoxID = el.id
             completion(editor)
