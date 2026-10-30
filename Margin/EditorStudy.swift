@@ -91,7 +91,14 @@ extension EditorModel {
         guard let selection = page.selection(from: toPDF(first), to: toPDF(last)),
               !(selection.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
+        let text = selection.selectionsByLine().compactMap(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        let excerpt = Excerpt(text: text, pageID: note.pages[index].id, rect: stroke.renderBounds)
         let mark = highlightMark
+        // A highlight stays exactly as drawn, while underlines and the like only make sense along the words.
+        guard mark != .highlight || Prefs.snapHighlights else {
+            note.excerpts.append(excerpt)
+            return
+        }
         let lines: [PKStroke] = selection.selectionsByLine().compactMap { line in
             let r = line.bounds(for: page).applying(toBox)
             guard r.width > 1 else { return nil }
@@ -122,8 +129,7 @@ extension EditorModel {
         strokes += lines
         lastStrokeCount = strokes.count
         canvas.drawing = PKDrawing(strokes: strokes)
-        let text = selection.selectionsByLine().compactMap(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        note.excerpts.append(Excerpt(text: text, pageID: note.pages[index].id, rect: stroke.renderBounds))
+        note.excerpts.append(excerpt)
     }
 
     // MARK: Area actions

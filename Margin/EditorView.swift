@@ -110,6 +110,7 @@ struct EditorView: View {
     @AppStorage("theme") private var theme = "system"
     @AppStorage("invertPages") private var invertPages = true
     @AppStorage("eraserReturns") private var eraserReturns = true
+    @AppStorage("snapHighlights") private var snapHighlights = false
     @State private var fontTarget = FontTarget.live
     @State private var commentText = ""
     @Environment(\.openWindow) private var openWindow
@@ -515,6 +516,10 @@ struct EditorView: View {
                     .pickerStyle(.menu)
                     widthPicker([12, 20, 32], selection: $model.highlightWidth)
                     colorRow(highlights, selection: $model.highlightColor)
+                    if model.highlightMark == .highlight {
+                        Toggle(isOn: $snapHighlights) { Label("Snap to Text", systemImage: "text.alignleft") }
+                            .toggleStyle(.button)
+                    }
                 case .eraser:
                     Picker("Eraser", selection: $model.eraseWholeStroke) {
                         Text("Partial").tag(false)

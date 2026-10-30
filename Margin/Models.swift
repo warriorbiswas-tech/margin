@@ -241,7 +241,7 @@ enum Prefs {
     static var paperStyle: PaperStyle { PaperStyle(rawValue: d.string(forKey: "defaultPaper") ?? "") ?? .ruled }
     static var paperColor: PaperColor { PaperColor(rawValue: d.string(forKey: "defaultColor") ?? "") ?? .white }
     static var pageSize: PageSize { PageSize(rawValue: d.string(forKey: "defaultSize") ?? "") ?? .letter }
-    static var snapToText: Bool { d.object(forKey: "snapToText") as? Bool ?? true }
+    static var snapHighlights: Bool { d.bool(forKey: "snapHighlights") }
     static var scribbleErase: Bool { d.object(forKey: "scribbleErase") as? Bool ?? true }
     static var holdForShapes: Bool { d.object(forKey: "holdForShapes") as? Bool ?? true }
     static var eraserReturns: Bool { d.object(forKey: "eraserReturns") as? Bool ?? true }

@@ -475,7 +475,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         if tool != .region { regionRect = nil }
         switch tool {
         case .pen: canvas.tool = PKInkingTool(penStyle.ink, color: penColor, width: penWidth)
-        case .highlighter: canvas.tool = PKInkingTool(.marker, color: highlightInk, width: highlightWidth)
+        case .highlighter: canvas.tool = PKInkingTool(.marker, color: highlightInk, width: highlightWidth * 1.25) // a marker lays down less than its width, and medium should cover a line
         case .eraser: canvas.tool = PKEraserTool(eraseWholeStroke ? .vector : .bitmap)
         case .lasso: canvas.tool = PKLassoTool()
         case .text, .region, .annotate, .tape, .laser: break
@@ -570,9 +570,9 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
                 guard let self else { return }
                 self.noticePencil(last)
                 if self.tool == .pen, Prefs.scribbleErase, self.scribbleErase(last) { return }
-                if self.tool == .pen || self.tool == .highlighter, Prefs.holdForShapes, !self.snapShapes, self.snapIfHeld(last) { return }
+                if self.tool == .pen, Prefs.holdForShapes, !self.snapShapes, self.snapIfHeld(last) { return }
                 if self.tool == .pen, self.snapShapes { self.snap(last) }
-                if self.tool == .highlighter, Prefs.snapToText { self.snapHighlight(last) }
+                if self.tool == .highlighter { self.snapHighlight(last) }
                 self.scheduleLiveText()
             }
         }
