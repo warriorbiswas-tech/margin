@@ -341,8 +341,7 @@ struct NoteCard: View {
                     Color.white
                 }
             }
-            .frame(height: 220)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 220, maxHeight: 220, alignment: .top)
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
             .accessibilityHidden(true)
