@@ -33,10 +33,14 @@ enum Renderer {
     }
 
     static func paperThumbnail(_ style: PaperStyle, color: PaperColor) -> UIImage {
-        let scale: CGFloat = 0.2
-        return UIGraphicsImageRenderer(size: CGSize(width: NoteLayout.width * scale, height: NoteLayout.paperHeight * scale)).image { renderer in
-            renderer.cgContext.scaleBy(x: scale, y: scale)
-            drawBackground(Page(style: style, color: color), pdf: nil, size: CGSize(width: NoteLayout.width, height: NoteLayout.paperHeight), in: renderer.cgContext)
+        let scale: CGFloat = 0.2, size = CGSize(width: NoteLayout.width, height: NoteLayout.paperHeight)
+        return UIGraphicsImageRenderer(size: CGSize(width: size.width * scale, height: size.height * scale)).image { renderer in
+            let ctx = renderer.cgContext
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.setFillColor(color.fill(dark: false).cgColor)
+            ctx.fill(CGRect(origin: .zero, size: size))
+            // Page lines are hairlines; at this size they need more weight to show the design.
+            PaperArt(ctx: ctx, size: size, lineColor: color.line(dark: false).withAlphaComponent(0.75), labelColor: color.label(dark: false)).draw(style)
         }
     }
 
@@ -79,6 +83,33 @@ enum Renderer {
         var attributes: [NSAttributedString.Key: Any] = [.font: font(el), .foregroundColor: textColor(el, dark: dark)]
         if el.link != nil { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
         return NSAttributedString(string: el.text, attributes: attributes)
+    }
+
+    /// The element's text without the words touched by `area` (note coordinates).
+    static func textRemovingWords(of el: Element, crossing area: CGRect) -> String {
+        let storage = NSTextStorage(attributedString: attributed(el))
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: el.rect.width - el.inset * 2, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+
+        let text = el.text
+        var doomed: [Range<String.Index>] = []
+        text.enumerateSubstrings(in: text.startIndex..., options: .byWords) { _, range, _, _ in
+            let glyphs = layout.glyphRange(forCharacterRange: NSRange(range, in: text), actualCharacterRange: nil)
+            let box = layout.boundingRect(forGlyphRange: glyphs, in: container)
+                .offsetBy(dx: el.rect.minX + el.inset, dy: el.rect.minY + el.inset)
+            if box.intersects(area) { doomed.append(range) }
+        }
+        var result = text
+        for range in doomed.reversed() {
+            var end = range.upperBound
+            if end < result.endIndex, result[end] == " " { end = result.index(after: end) }
+            result.removeSubrange(range.lowerBound..<end)
+        }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func textHeight(_ el: Element) -> CGFloat {

@@ -127,6 +127,13 @@ enum ShapeSnap {
         return simplify(Array(points[...farthest]), tolerance: tolerance).dropLast() + simplify(Array(points[farthest...]), tolerance: tolerance)
     }
 
+    /// True when the pen stayed put at the end of a stroke for at least `seconds`.
+    static func heldAtEnd(_ points: [(location: CGPoint, time: TimeInterval)], seconds: TimeInterval = 0.45, tolerance: CGFloat = 5) -> Bool {
+        guard points.count >= 2, let end = points.last else { return false }
+        let lastMove = points.last { dist($0.location, end.location) > tolerance }?.time ?? points[0].time
+        return end.time - lastMove >= seconds
+    }
+
     /// A wavy underline along a line of text.
     static func squiggle(fromX start: CGFloat, toX end: CGFloat, y: CGFloat, amplitude: CGFloat = 2.5, step: CGFloat = 6) -> [CGPoint] {
         guard end > start else { return [CGPoint(x: start, y: y)] }

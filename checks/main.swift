@@ -41,6 +41,12 @@ let wave = ShapeSnap.squiggle(fromX: 0, toX: 30, y: 10)
 check(wave.count == 6 && wave[0].y < 10 && wave[1].y > 10, "squiggle alternates around the line")
 check(ShapeSnap.squiggle(fromX: 5, toX: 5, y: 1).count == 1, "zero-width squiggle is safe")
 
+let moving: [(location: CGPoint, time: TimeInterval)] = (0...10).map { (CGPoint(x: CGFloat($0) * 20, y: 0), Double($0) * 0.02) }
+check(!ShapeSnap.heldAtEnd(moving), "a stroke that keeps moving isn't held")
+check(ShapeSnap.heldAtEnd(moving + [(CGPoint(x: 201, y: 1), 0.8)]), "a pause at the end is a hold")
+check(!ShapeSnap.heldAtEnd(moving + [(CGPoint(x: 201, y: 1), 0.3)]), "a brief pause isn't")
+check(!ShapeSnap.heldAtEnd([(CGPoint.zero, 0)]), "a single point isn't")
+
 let scribble = (0...200).map { i -> CGPoint in
     CGPoint(x: 100 + cos(CGFloat(i) * 0.9) * 80, y: 100 + sin(CGFloat(i) * 1.7) * 60)
 }

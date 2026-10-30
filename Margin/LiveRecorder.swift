@@ -43,7 +43,7 @@ final class LocalWhisper: @unchecked Sendable {
 
 enum Transcriber {
     /// Decodes an audio file a few minutes at a time, so an hour-long lecture doesn't sit in memory at once.
-    static func transcribe(file url: URL, progress: @escaping @MainActor (Double) -> Void) async throws -> [TranscriptLine] {
+    static func transcribe(file url: URL, progress: @escaping @MainActor @Sendable (Double) -> Void) async throws -> [TranscriptLine] {
         let file = try AVAudioFile(forReading: url)
         let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: LocalWhisper.sampleRate, channels: 1, interleaved: false)!
         guard let converter = AVAudioConverter(from: file.processingFormat, to: target) else { throw AIError.failed }

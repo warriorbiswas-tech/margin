@@ -15,6 +15,7 @@ func attempt(_ name: String, _ work: () async throws -> String) async {
     }
 }
 
+setvbuf(stdout, nil, _IOLBF, 0)
 var failures = 0
 let arguments = CommandLine.arguments
 ModelFile.directory = URL(fileURLWithPath: arguments[1])

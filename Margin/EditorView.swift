@@ -536,6 +536,12 @@ struct EditorView: View {
             .toggleStyle(.button)
         if model.liveText {
             fontMenu(TextFonts.title(model.liveFont), target: .live) { model.liveFont = $0 }
+            Menu(model.liveSize == 0 ? "Auto Size" : "\(Int(model.liveSize)) pt") {
+                Button("Auto") { model.liveSize = 0 }
+                ForEach([12, 14, 16, 18, 20, 24, 28, 32, 40, 48], id: \.self) { size in
+                    Button("\(size) pt") { model.liveSize = Double(size) }
+                }
+            }
         }
         Toggle(isOn: $model.snapShapes) { Label("Shapes", systemImage: "scribble.variable") }
             .toggleStyle(.button)

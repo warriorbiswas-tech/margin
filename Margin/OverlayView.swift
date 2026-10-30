@@ -132,7 +132,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
                 beginEditing(el)
             }
         default:
-            break
+            if let editor, !editor.frame.contains(p) { commitEditing() }
         }
     }
 
@@ -306,6 +306,15 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         addSubview(view)
         editor = view
         view.becomeFirstResponder()
+    }
+
+    /// Scribble is about to write into this box. An empty box left behind is dropped first.
+    func focusForScribble(_ el: Element) -> UITextView? {
+        if model?.editingElementID != el.id {
+            commitEditing()
+            beginEditing(el)
+        }
+        return editor
     }
 
     func textViewDidChange(_ textView: UITextView) {

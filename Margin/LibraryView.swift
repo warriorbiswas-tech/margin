@@ -381,7 +381,8 @@ struct SettingsView: View {
     @AppStorage("defaultColor") private var color = PaperColor.white
     @AppStorage("defaultSize") private var size = PageSize.letter
     @AppStorage("snapToText") private var snapToText = true
-    @AppStorage("scribbleErase") private var scribbleErase = false
+    @AppStorage("scribbleErase") private var scribbleErase = true
+    @AppStorage("holdForShapes") private var holdForShapes = true
     @AppStorage("liveTranscribe") private var liveTranscribe = true
     @AppStorage("eraserReturns") private var eraserReturns = true
     @AppStorage("theme") private var theme = "system"
@@ -410,7 +411,8 @@ struct SettingsView: View {
                 }
                 Section("Writing") {
                     Toggle("Snap PDF Highlights to Text", isOn: $snapToText)
-                    Toggle("Scribble to Erase", isOn: $scribbleErase)
+                    Toggle("Scratch Out to Delete", isOn: $scribbleErase)
+                    Toggle("Hold to Draw Shapes", isOn: $holdForShapes)
                     Toggle("Return to Pen After Erasing", isOn: $eraserReturns)
                 }
                 Section("Recording") {

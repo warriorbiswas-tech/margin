@@ -17,7 +17,6 @@ final class ModelDownloads: NSObject {
     }
 
     private(set) var states: [String: State] = [:]
-    @ObservationIgnored private var files: [Int: ModelFile] = [:]
     @ObservationIgnored private var session: URLSession!
 
     override private init() {
@@ -25,16 +24,32 @@ final class ModelDownloads: NSObject {
         let configuration = URLSessionConfiguration.background(withIdentifier: "margin.models")
         configuration.isDiscretionary = false
         session = URLSession(configuration: configuration, delegate: self, delegateQueue: .main)
-        for file in [ModelFile.writing, ModelFile.speech] {
+        for file in Self.all {
             states[file.name] = file.isInstalled ? .installed : .absent
         }
+        // A download started before the app last quit is still running, so pick it back up.
+        session.getAllTasks { tasks in
+            let names = tasks.compactMap(\.taskDescription)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    for file in Self.all where names.contains(file.name) && !file.isInstalled {
+                        self.states[file.name] = .downloading(0)
+                    }
+                }
+            }
+        }
+    }
+
+    private static let all = [ModelFile.writing, ModelFile.speech]
+    private nonisolated static func file(for task: URLSessionTask) -> ModelFile? {
+        [ModelFile.writing, ModelFile.speech].first { $0.name == task.taskDescription }
     }
 
     func state(of file: ModelFile) -> State { states[file.name] ?? .absent }
 
     func download(_ file: ModelFile) {
         let task = session.downloadTask(with: file.url)
-        files[task.taskIdentifier] = file
+        task.taskDescription = file.name
         states[file.name] = .downloading(0)
         task.resume()
     }
@@ -90,19 +105,17 @@ final class ModelDownloads: NSObject {
 
 extension ModelDownloads: URLSessionDownloadDelegate {
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        let id = downloadTask.taskIdentifier
+        guard let file = Self.file(for: downloadTask) else { return }
         MainActor.assumeIsolated {
-            guard let file = files[id] else { return }
             states[file.name] = .downloading(Double(totalBytesWritten) / Double(file.bytes))
         }
     }
 
     nonisolated func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        let id = downloadTask.taskIdentifier
+        guard let file = Self.file(for: downloadTask) else { return }
         let status = (downloadTask.response as? HTTPURLResponse)?.statusCode ?? 0
         // Runs on the main queue (see delegateQueue) and must take the file before returning.
         MainActor.assumeIsolated {
-            guard let file = files[id] else { return }
             guard status == 200 else {
                 states[file.name] = .failed("The download failed (error \(status)).")
                 return
@@ -112,12 +125,9 @@ extension ModelDownloads: URLSessionDownloadDelegate {
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        let id = task.taskIdentifier
-        let message = error?.localizedDescription
+        guard let file = Self.file(for: task), let message = error?.localizedDescription else { return }
         MainActor.assumeIsolated {
-            guard let file = files[id] else { return }
-            files[id] = nil
-            if let message { states[file.name] = .failed(message) }
+            states[file.name] = .failed(message)
         }
     }
 }

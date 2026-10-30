@@ -7,16 +7,35 @@ extension EditorModel {
     // MARK: Ink helpers
 
     func scribbleErase(_ stroke: PKStroke) -> Bool {
-        var strokes = canvas.drawing.strokes
+        let strokes = canvas.drawing.strokes
         guard strokes.last?.path.creationDate == stroke.path.creationDate,
               Scribble.isScribble(stroke.path.map(\.location)) else { return false }
         let area = stroke.renderBounds
         let kept = strokes.dropLast().filter { !$0.renderBounds.intersects(area) }
-        guard kept.count < strokes.count - 1 else { return false } // covered nothing, so it's just a mark
+        let typed = note.elements.filter {
+            $0.imageFile == nil && !$0.isTape && $0.cover == nil && $0.comment == nil && $0.rect.intersects(area)
+        }
+        let edits = typed.map { (id: $0.id, text: Renderer.textRemovingWords(of: $0, crossing: area), old: $0.text) }
+            .filter { $0.text != $0.old }
+        guard kept.count < strokes.count - 1 || !edits.isEmpty else { return false } // covered nothing, so it's just a mark
+
         registerStateUndo()
-        strokes = Array(kept)
-        lastStrokeCount = strokes.count
-        canvas.drawing = PKDrawing(strokes: strokes)
+        lastStrokeCount = kept.count
+        canvas.drawing = PKDrawing(strokes: Array(kept))
+        for edit in edits {
+            guard let i = note.elements.firstIndex(where: { $0.id == edit.id }) else { continue }
+            if edit.text.isEmpty {
+                if selectedElementID == edit.id { selectedElementID = nil }
+                if liveTailID == edit.id { liveTailID = nil }
+                note.elements.remove(at: i)
+            } else {
+                note.elements[i].text = edit.text
+                note.elements[i].rect.size.height = Renderer.textHeight(note.elements[i])
+            }
+        }
+        liveSince = max(liveSince, stroke.path.creationDate)
+        syncElements()
+        scheduleSave()
         return true
     }
 
@@ -341,7 +360,7 @@ extension EditorModel {
 
     /// Live text picks up where the last word ended, so a sentence written in bursts stays one line of type.
     private func place(_ text: String, in rect: CGRect, font: String, colorHex: String, live: Bool) {
-        let size = min(max((rect.height * 0.8).rounded(), 11), 64)
+        let size = liveSize > 0 && live ? CGFloat(liveSize) : min(max((rect.height * 0.8).rounded(), 11), 64)
         if live, let id = liveTailID, let i = note.elements.firstIndex(where: { $0.id == id }) {
             let tail = note.elements[i]
             let sameLine = abs(rect.midY - tail.rect.midY) < max(tail.rect.height, rect.height) * 0.7
@@ -360,6 +379,19 @@ extension EditorModel {
         el.rect.size.height = Renderer.textHeight(el)
         note.elements.append(el)
         if live { liveTailID = el.id }
+    }
+
+    /// A new text box for Scribble, starting where the Pencil came down and running to the page edge.
+    func addLiveTextBox(at point: CGPoint) -> Element {
+        registerStateUndo()
+        let size = liveSize > 0 ? CGFloat(liveSize) : 22
+        let x = max(min(point.x, NoteLayout.width - 120), 0)
+        var el = Element(rect: CGRect(x: x, y: point.y - size * 0.7, width: NoteLayout.width - x - 12, height: 30),
+                         fontSize: size, colorHex: penColor.hex, fontName: liveFont)
+        el.rect.size.height = Renderer.textHeight(el)
+        note.elements.append(el)
+        syncElements()
+        return el
     }
 
     func scheduleLiveText() {

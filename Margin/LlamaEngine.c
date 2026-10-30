@@ -16,9 +16,10 @@ bool margin_llm_supported(void) { return true; }
 margin_llm *margin_llm_open(const char *model_path, int32_t context_tokens, int32_t threads) {
     llama_backend_init();
 
-    // CPU only. iOS refuses GPU work from the background, and locking the iPad mid-answer must not crash the app.
+    // On the GPU, a short answer takes seconds instead of minutes. iOS forbids GPU work in the background,
+    // so LocalLLM stops generating as soon as the app leaves the screen.
     struct llama_model_params model_params = llama_model_default_params();
-    model_params.n_gpu_layers = 0;
+    model_params.n_gpu_layers = 99;
     struct llama_model *model = llama_model_load_from_file(model_path, model_params);
     if (!model) return NULL;
 
@@ -78,7 +79,8 @@ static struct llama_sampler *make_sampler(const struct llama_vocab *vocab, float
         struct llama_sampler *constraint = llama_sampler_init_grammar(vocab, grammar, "root");
         if (constraint) llama_sampler_chain_add(chain, constraint);
     }
-    llama_sampler_chain_add(chain, llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
+    // Structured answers repeat their keys by design, so a repetition penalty would fight the format.
+    if (!grammar) llama_sampler_chain_add(chain, llama_sampler_init_penalties(llama_vocab_n_tokens(vocab), 64, 1.1f, 0.0f, 0.0f));
     llama_sampler_chain_add(chain, llama_sampler_init_top_k(40));
     llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.9f, 1));
     llama_sampler_chain_add(chain, llama_sampler_init_temp(temperature));

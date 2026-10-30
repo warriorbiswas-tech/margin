@@ -136,11 +136,19 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
             UserDefaults.standard.set(liveText, forKey: "liveText")
             liveSince = Date()
             liveTailID = nil
+            applyTool()
         }
     }
     var liveFont = UserDefaults.standard.string(forKey: "liveFont") ?? "sans" {
         didSet { UserDefaults.standard.set(liveFont, forKey: "liveFont") }
     }
+    var liveSize = UserDefaults.standard.double(forKey: "liveSize") { // 0 matches the handwriting
+        didSet { UserDefaults.standard.set(liveSize, forKey: "liveSize") }
+    }
+    @ObservationIgnored let liveScribble = LiveScribble()
+
+    /// Pencil writing goes to Scribble. Finger writing can't, so it stays ink and is read from the page.
+    var scribbleActive: Bool { liveText && tool == .pen && !fingerDrawing && playing == nil }
     @ObservationIgnored var liveSince = Date()
     @ObservationIgnored var liveTask: Task<Void, Never>?
     @ObservationIgnored var liveTailID: UUID?
@@ -169,7 +177,12 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
     var focusMode = false
     var regionRect: CGRect? { didSet { overlay.refreshRegion() } }
     var busy: String?
-    var fingerDrawing = !UIPencilInteraction.prefersPencilOnlyDrawing { didSet { applyDrawingPolicy() } }
+    var fingerDrawing = !UIPencilInteraction.prefersPencilOnlyDrawing {
+        didSet {
+            applyDrawingPolicy()
+            applyTool()
+        }
+    }
 
     var textColor = UIColor(hex: "1C1C1E")
     var textSize: CGFloat = 20
@@ -244,6 +257,8 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         canvas.addSubview(overlay)
         overlay.model = self
         canvas.panGestureRecognizer.require(toFail: overlay.pan)
+        liveScribble.model = self
+        overlay.addInteraction(UIIndirectScribbleInteraction(delegate: liveScribble))
         configureZoomCanvas()
         let fingerTap = UITapGestureRecognizer(target: self, action: #selector(fingerTapped))
         fingerTap.allowedTouchTypes = [UITouch.TouchType.direct.rawValue as NSNumber]
@@ -395,11 +410,11 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
     // MARK: Tools
 
     private func applyTool() {
-        let inking = [.pen, .highlighter, .eraser, .lasso].contains(tool) && playing == nil
+        let inking = [.pen, .highlighter, .eraser, .lasso].contains(tool) && playing == nil && !scribbleActive
         canvas.drawingGestureRecognizer.isEnabled = inking
         zoomCanvas.drawingGestureRecognizer.isEnabled = inking
         overlay.isUserInteractionEnabled = !inking
-        if tool != .text {
+        if tool != .text, !scribbleActive {
             overlay.commitEditing()
             selectedElementID = nil
         }
@@ -479,7 +494,9 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         if added, let last = strokes.last, -last.path.creationDate.timeIntervalSinceNow < 3 {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                self.noticePencil(last)
                 if self.tool == .pen, Prefs.scribbleErase, self.scribbleErase(last) { return }
+                if self.tool == .pen || self.tool == .highlighter, Prefs.holdForShapes, !self.snapShapes, self.snapIfHeld(last) { return }
                 if self.tool == .pen, self.snapShapes { self.snap(last) }
                 if self.tool == .highlighter, Prefs.snapToText { self.snapHighlight(last) }
                 self.scheduleLiveText()
@@ -487,6 +504,21 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         }
         if added, let last = strokes.last { appendPageIfNeeded(after: last.renderBounds) }
         scheduleSave()
+    }
+
+    /// Finishing a stroke and holding still turns it into a clean shape. Returns true if it did.
+    private func snapIfHeld(_ stroke: PKStroke) -> Bool {
+        let points = stroke.path.map { (location: $0.location, time: $0.timeOffset) }
+        guard ShapeSnap.heldAtEnd(points), ShapeSnap.recognize(stroke.path.map(\.location)) != nil else { return false }
+        snap(stroke)
+        liveSince = max(liveSince, stroke.path.creationDate)
+        return true
+    }
+
+    /// A finger always reports a flat altitude, so a tilted point means a Pencil. Live Text then moves to Scribble, which only a Pencil can use.
+    private func noticePencil(_ stroke: PKStroke) {
+        guard liveText, fingerDrawing, let point = stroke.path.first, point.altitude < .pi / 2 - 0.05 else { return }
+        fingerDrawing = false
     }
 
     private func snap(_ stroke: PKStroke) {
@@ -854,11 +886,13 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
 
     func refreshSmartNotes() async {
         let transcript = liveLines.map(\.text).joined(separator: " ")
-        guard !transcript.isEmpty, !smartNotesBusy else { return }
+        guard !transcript.isEmpty, !smartNotesBusy, UIApplication.shared.applicationState == .active else { return }
         smartNotesBusy = true
         defer { smartNotesBusy = false }
         do {
             smartNotes = try await AI.smartNotes(previous: smartNotes, transcript: transcript)
+        } catch is CancellationError {
+            return
         } catch {
             smartNotesOn = false
             message = error.localizedDescription
@@ -1008,7 +1042,7 @@ final class EditorModel: NSObject, Identifiable, PKCanvasViewDelegate, UIPencilI
         let url = library.dir(note.id).appendingPathComponent(rec.file)
         transcribeTask = Task {
             do {
-                let lines = try await Transcriber.transcribe(file: url) { [weak self] done in self?.transcribeProgress = done }
+                let lines = try await Transcriber.transcribe(file: url) { done in self.transcribeProgress = done }
                 finishTranscript(rec.id, lines: lines)
             } catch is CancellationError {
                 transcribing = nil

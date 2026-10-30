@@ -84,6 +84,8 @@ struct MindMapView: View {
             defer { working = false }
             do {
                 root = try await generate()
+            } catch is CancellationError {
+                self.error = "Stopped because Margin left the screen. Try again."
             } catch {
                 self.error = error.localizedDescription
             }
@@ -185,6 +187,8 @@ struct GeneratedText: View {
                     DispatchQueue.main.async { text = partial }
                 }
                 text = result
+            } catch is CancellationError {
+                self.error = "Stopped because Margin left the screen. Try again."
             } catch {
                 self.error = error.localizedDescription
             }
@@ -331,6 +335,8 @@ struct CardsView: View {
                 let cards = try await AI.flashcards(from: text)
                 model.note.flashcards += cards.map { Flashcard(front: $0.front, back: $0.back) }
                 model.scheduleSave()
+            } catch is CancellationError {
+                self.error = "Stopped because Margin left the screen. Try again."
             } catch {
                 self.error = error.localizedDescription
             }
@@ -450,6 +456,8 @@ struct QuizView: View {
             do {
                 questions = try await generate()
                 answers = [:]
+            } catch is CancellationError {
+                self.error = "Stopped because Margin left the screen. Try again."
             } catch {
                 self.error = error.localizedDescription
             }

@@ -14,4 +14,4 @@ swiftc -swift-version 5 -import-objc-header "$root/Margin/Engines.h" \
   "$work/llama.o" "$work/whisper.o" -F "$root/Vendor/macos" -framework llama -framework whisper \
   -Xlinker -rpath -Xlinker "$root/Vendor/macos" -o "$work/engines"
 say -o "$work/speech.aiff" "Today we are covering mitosis. In metaphase the chromosomes line up along the equator of the cell. Then, in anaphase, they are pulled apart."
-"$work/engines" "$1" "$work/speech.aiff"
+"$work/engines" "$1" "$work/speech.aiff" 2>"$work/engine-log.txt"
