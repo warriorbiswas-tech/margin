@@ -393,6 +393,8 @@ struct History<State: Equatable> {
     private var future: [State] = []
     let limit: Int
 
+    init(limit: Int) { self.limit = limit }
+
     var canUndo: Bool { !past.isEmpty }
     var canRedo: Bool { !future.isEmpty }
 
