@@ -36,7 +36,9 @@ final class Library {
         let dirs = (try? FileManager.default.contentsOfDirectory(at: notesDir, includingPropertiesForKeys: nil)) ?? []
         notes = dirs.compactMap { dir in
             guard let data = try? Data(contentsOf: dir.appendingPathComponent("note.json")) else { return nil }
-            return try? JSONDecoder().decode(Note.self, from: data)
+            guard var note = try? JSONDecoder().decode(Note.self, from: data) else { return nil }
+            if let text = try? String(contentsOf: dir.appendingPathComponent(Self.searchFile), encoding: .utf8) { note.searchText = text }
+            return note
         }
     }
 
@@ -90,6 +92,8 @@ final class Library {
 
     // MARK: Notes
 
+    private nonisolated static let searchFile = "search.txt"
+
     func save(_ note: Note, ink: PKDrawing? = nil, failed: (@MainActor @Sendable (String) -> Void)? = nil) {
         var note = note
         note.updatedAt = Date()
@@ -106,12 +110,20 @@ final class Library {
             lastError = "Couldn't save “\(note.title)”: \(error.localizedDescription)"
             return
         }
+        let searchChanged = notes.first(where: { $0.id == note.id }).map { $0.searchText != note.searchText } ?? false
         if let i = notes.firstIndex(where: { $0.id == note.id }) { notes[i] = note } else { notes.append(note) }
         writer.async { [weak self] in
             do {
                 // The ink goes first: note.json is what tells a sync that a note changed.
                 try ink?.dataRepresentation().write(to: inkFile, options: .atomic)
-                try JSONEncoder().encode(note).write(to: folder.appendingPathComponent("note.json"), options: .atomic)
+                // A book's text runs to most of a megabyte and rarely changes, so it isn't rewritten and re-uploaded with every stroke.
+                let search = folder.appendingPathComponent(Self.searchFile)
+                if searchChanged || (!note.searchText.isEmpty && !FileManager.default.fileExists(atPath: search.path)) {
+                    try note.searchText.write(to: search, atomically: true, encoding: .utf8)
+                }
+                var stored = note
+                stored.searchText = ""
+                try JSONEncoder().encode(stored).write(to: folder.appendingPathComponent("note.json"), options: .atomic)
             } catch {
                 let reason = "Couldn't save “\(note.title)”: \(error.localizedDescription)"
                 Task { @MainActor [weak self] in
@@ -336,9 +348,9 @@ final class Library {
             for note in notes where note.deletedAt == nil && !note.locked {
                 let spoken = note.recordings.flatMap { $0.transcript ?? [] }.map(\.text).joined(separator: " ")
                 let body = ([note.searchText, spoken] + note.elements.map(\.text)).filter { !$0.isEmpty }.joined(separator: "\n")
-                for chunk in TextTools.chunks(body, size: 3000) { passages.append("From \"\(note.title)\":\n\(chunk)") }
+                for chunk in TextTools.chunks(body, size: TextTools.passageSize) { passages.append("From \"\(note.title)\":\n\(chunk)") }
             }
-            return TextTools.bestPassages(query: question, passages: passages, limit: 12000).map { passages[$0] }.joined(separator: "\n\n")
+            return TextTools.bestPassages(query: question, passages: passages, limit: TextTools.contextSize).sorted().map { passages[$0] }.joined(separator: "\n\n")
         }.value
     }
 
@@ -379,11 +391,13 @@ final class Library {
 
     // MARK: Sync
 
-    /// Every save lands here, so each stroke and annotation reaches the folder a moment after it's made.
+    /// Every save lands here, so each stroke and annotation reaches the folder soon after it's made.
+    /// While a note is open that waits longer, since closing it or leaving the app syncs straight away.
     private func syncSoon() {
         syncTask?.cancel()
+        let delay = editing.isEmpty ? 5 : 30
         syncTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: .seconds(delay))
             if !Task.isCancelled { await self?.sync() }
         }
     }

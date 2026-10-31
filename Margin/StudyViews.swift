@@ -450,7 +450,9 @@ struct ChatView: View {
         task = Task {
             defer { working = false }
             do {
-                let system = AI.chatSystem(context: await context(question))
+                // A follow-up like "why does it happen?" says nothing of its subject, so the question before it searches too.
+                let recent = messages.filter { $0.role == "user" }.suffix(2).map(\.text).joined(separator: " ")
+                let system = AI.chatSystem(context: await context(recent))
                 let asked = Array(messages.suffix(5)) // recent turns are enough, and leave room for the notes
                 messages.append(("assistant", ""))
                 let last = messages.count - 1

@@ -238,6 +238,7 @@ struct LibraryView: View {
 
     private var sidebar: some View {
         List(selection: $shelf) {
+            let due = library.dueCards.count, tags = library.allTags
             Label("All Notes", systemImage: "note.text").tag(Shelf.all)
             Label("Favorites", systemImage: "star").tag(Shelf.favorites)
             Label("Unfiled", systemImage: "tray").tag(Shelf.unfiled)
@@ -245,7 +246,7 @@ struct LibraryView: View {
                 HStack {
                     Text("Study")
                     Spacer()
-                    if !library.dueCards.isEmpty { Text("\(library.dueCards.count)").foregroundStyle(.secondary) }
+                    if due > 0 { Text("\(due)").foregroundStyle(.secondary) }
                 }
             } icon: {
                 Image(systemName: "graduationcap")
@@ -257,9 +258,9 @@ struct LibraryView: View {
                     ask("New Folder") { if !$0.isEmpty { library.addSubject(name: $0) } }
                 }
             }
-            if !library.allTags.isEmpty {
+            if !tags.isEmpty {
                 Section("Tags") {
-                    ForEach(library.allTags, id: \.self) { tag in
+                    ForEach(tags, id: \.self) { tag in
                         Label(tag, systemImage: "number").tag(Shelf.tag(tag))
                     }
                 }

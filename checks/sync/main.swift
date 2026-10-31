@@ -41,6 +41,16 @@ assert(syncIPad().uploaded == 1)
 assert(syncOther().downloaded == 1)
 assert(title(other, a) == "first" && drawing(other, a) == "ink")
 
+// A book's search text travels beside the note, and the device's own cache of its pages doesn't.
+let extras = ipad.appendingPathComponent(a)
+try! Data("book text".utf8).write(to: extras.appendingPathComponent("search.txt"))
+try! Data("{}".utf8).write(to: extras.appendingPathComponent("page-text.json"))
+write(ipad, a, at: 1.5, title: "first")
+assert(syncIPad().uploaded == 1)
+assert(syncOther().downloaded == 1)
+assert(fm.fileExists(atPath: other.appendingPathComponent(a).appendingPathComponent("search.txt").path))
+assert(!fm.fileExists(atPath: other.appendingPathComponent(a).appendingPathComponent("page-text.json").path))
+
 // Nothing to do when nothing changed.
 let idle = syncIPad()
 assert(idle.uploaded == 0 && idle.downloaded == 0)

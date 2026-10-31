@@ -60,8 +60,10 @@ final class LocalLLM: @unchecked Sendable {
     static let shared = LocalLLM()
     static let contextTokens: Int32 = 8192
 
-    private let queue = DispatchQueue(label: "margin.llm", qos: .userInitiated)
+    // Metal hands back autoreleased buffers, so without a pool per job closing the model frees nothing.
+    private let queue = DispatchQueue(label: "margin.llm", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private var handle: OpaquePointer?
+    private var idleUnload: DispatchWorkItem?
     private let stateLock = NSLock()
     private var current: Run?
     private var inBackground = false
@@ -78,6 +80,7 @@ final class LocalLLM: @unchecked Sendable {
     private final class Run: @unchecked Sendable {
         var bytes = Data()
         var cancelled = false
+        var nextPartial = Date.distantPast
         let onPartial: (@Sendable (String) -> Void)?
         init(onPartial: (@Sendable (String) -> Void)?) { self.onPartial = onPartial }
     }
@@ -92,12 +95,24 @@ final class LocalLLM: @unchecked Sendable {
         }
     }
 
+    /// The model holds over a gigabyte, more than it should keep once the questions stop.
+    private func unloadWhenIdle() {
+        idleUnload?.cancel()
+        let work = DispatchWorkItem { [self] in
+            margin_llm_close(handle)
+            handle = nil
+        }
+        idleUnload = work
+        queue.asyncAfter(deadline: .now() + 300, execute: work)
+    }
+
     /// Loads the model ahead of the first question, so the answer doesn't have to wait for it.
     func warmUp() {
         guard ModelFile.writing.isInstalled, margin_llm_supported() else { return }
         queue.async { [self] in
             guard handle == nil, !stateLock.withLock({ inBackground }) else { return }
             handle = open()
+            unloadWhenIdle()
         }
     }
 
@@ -128,7 +143,10 @@ final class LocalLLM: @unchecked Sendable {
             current = run
             return !inBackground && !run.cancelled
         }
-        defer { stateLock.withLock { current = nil } }
+        defer {
+            stateLock.withLock { current = nil }
+            unloadWhenIdle()
+        }
         guard allowed else { throw CancellationError() }
         if handle == nil { handle = open() }
         guard let handle else {
@@ -147,13 +165,20 @@ final class LocalLLM: @unchecked Sendable {
             let run = Unmanaged<Run>.fromOpaque(user!).takeUnretainedValue()
             guard !run.cancelled else { return false }
             run.bytes.append(Data(bytes: bytes!, count: Int(length)))
-            run.onPartial?(TextTools.visibleAnswer(String(decoding: run.bytes, as: UTF8.self)))
+            // Ten updates a second is smooth to read; one per token re-parses the whole answer each time.
+            let now = Date()
+            if let onPartial = run.onPartial, now >= run.nextPartial {
+                run.nextPartial = now.addingTimeInterval(0.1)
+                onPartial(TextTools.visibleAnswer(String(decoding: run.bytes, as: UTF8.self)))
+            }
             return true
         }, user)
         if run.cancelled { throw CancellationError() }
         if status == Int32(margin_error_too_long) { throw AIError.tooLong }
         guard status == Int32(margin_ok) else { throw AIError.failed }
-        return TextTools.visibleAnswer(String(decoding: run.bytes, as: UTF8.self))
+        let answer = TextTools.visibleAnswer(String(decoding: run.bytes, as: UTF8.self))
+        run.onPartial?(answer)
+        return answer
     }
 }
 
@@ -314,7 +339,9 @@ enum AI {
 
     static func summary(of text: String, using digester: Digester? = nil, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
         let notes = try await digest(text, using: digester)
-        return try await complete(system: "Summarize study notes as short, clear bullet points grouped by topic, keeping every definition, name and number that matters. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
+        // This model ignores a requested length but keeps to a count of bullets.
+        let bullets = min(max(notes.count / 500, 5), 30)
+        return try await complete(system: "Summarize study notes as at most \(bullets) short bullet points, one line each, grouped by topic. Keep only the main ideas and the definitions and numbers they depend on, in your own words. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
     }
 
     static func flashcards(from text: String, count: Int = 10, using digester: Digester? = nil) async throws -> [(front: String, back: String)] {

@@ -1154,11 +1154,11 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         return await Task.detached(priority: .userInitiated) {
             var passages: [String] = []
             for (i, text) in pages.enumerated() {
-                for chunk in TextTools.chunks(text, size: 3000) { passages.append("Page \(i + 1):\n\(chunk)") }
+                for chunk in TextTools.chunks(text, size: TextTools.passageSize) { passages.append("Page \(i + 1):\n\(chunk)") }
             }
-            for chunk in TextTools.chunks(spoken, size: 3000) { passages.append("Recording transcript:\n\(chunk)") }
-            let chosen = TextTools.bestPassages(query: question, passages: passages, limit: 12000)
-            return chosen.map { passages[$0] }.joined(separator: "\n\n")
+            for chunk in TextTools.chunks(spoken, size: TextTools.passageSize) { passages.append("Recording transcript:\n\(chunk)") }
+            let chosen = TextTools.bestPassages(query: question, passages: passages, limit: TextTools.contextSize)
+            return chosen.sorted().map { passages[$0] }.joined(separator: "\n\n")
         }.value
     }
 

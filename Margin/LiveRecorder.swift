@@ -13,9 +13,10 @@ final class LocalWhisper: @unchecked Sendable {
     static let shared = LocalWhisper()
     static let sampleRate = 16_000.0
 
-    private let queue = DispatchQueue(label: "margin.whisper", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "margin.whisper", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private var handle: OpaquePointer?
     private var openModel: String?
+    private var idleClose: DispatchWorkItem?
 
     private final class Collector {
         var lines: [TranscriptLine] = []
@@ -29,6 +30,18 @@ final class LocalWhisper: @unchecked Sendable {
     static var isAvailable: Bool { margin_whisper_supported() && (ModelFile.speech.isInstalled || ModelFile.speechWorld.isInstalled) }
 #endif
 
+    func unload() {
+        queue.async { [self] in close() }
+    }
+
+    private func close() {
+        margin_whisper_close(handle)
+        handle = nil
+        openModel = nil
+        // Without this, an iPad's allocator keeps a couple of hundred megabytes of the freed model for itself.
+        malloc_zone_pressure_relief(nil, 0)
+    }
+
     func transcribe(_ samples: [Float], offset: TimeInterval) async throws -> [TranscriptLine] {
         try await withCheckedThrowingContinuation { continuation in
             queue.async { [self] in
@@ -38,6 +51,13 @@ final class LocalWhisper: @unchecked Sendable {
     }
 
     private func run(_ samples: [Float], offset: TimeInterval) throws -> [TranscriptLine] {
+        // A live recording sends audio every few seconds, so a minute's quiet means it has finished.
+        idleClose?.cancel()
+        defer {
+            let work = DispatchWorkItem { [self] in close() }
+            idleClose = work
+            queue.asyncAfter(deadline: .now() + 60, execute: work)
+        }
         // Read for each chunk, so changing it during a recording takes effect straight away.
         let wanted = UserDefaults.standard.string(forKey: SpeechLanguage.key) ?? "en"
         let preferred = wanted == "en" ? ModelFile.speech : ModelFile.speechWorld

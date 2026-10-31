@@ -176,9 +176,9 @@ enum Sync {
     private static func syncedFiles(in dir: URL) -> [String] {
         let fm = FileManager.default
         return (fm.subpaths(atPath: dir.path) ?? []).filter { path in
-            // Version history and the AI's cache are each device's own.
+            // Version history and the caches are each device's own.
             let parts = path.split(separator: "/")
-            guard parts.first != "versions", path != "digest-cache.json", !parts.contains(where: { $0.hasPrefix(".") }) else { return false }
+            guard parts.first != "versions", path != "digest-cache.json", path != "page-text.json", !parts.contains(where: { $0.hasPrefix(".") }) else { return false }
             var isDirectory: ObjCBool = false
             return fm.fileExists(atPath: dir.appendingPathComponent(path).path, isDirectory: &isDirectory) && !isDirectory.boolValue
         }

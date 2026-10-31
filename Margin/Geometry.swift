@@ -554,6 +554,10 @@ enum TextTools {
     }
 
     /// Splits at paragraph or sentence ends where possible, so no chunk starts mid-thought.
+    // How much of a book the assistant reads per question. Reading takes about 1 second per 1,000 characters on an iPad.
+    static let passageSize = 1500
+    static let contextSize = 7000
+
     static func chunks(_ text: String, size: Int) -> [String] {
         var pieces: [String] = [], rest = Substring(text)
         while rest.count > size {

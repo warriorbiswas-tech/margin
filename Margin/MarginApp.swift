@@ -1,4 +1,5 @@
 import SwiftUI
+import os
 
 @main
 struct MarginApp: App {
@@ -25,7 +26,11 @@ struct MarginApp: App {
                 }
                 .task { await library.sync() }
                 .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                    // iOS warns the moment the writing model is busy, long before Margin is in danger.
+                    // Reloading it on every warning would make each question start from nothing.
+                    guard os_proc_available_memory() < 500_000_000 else { return }
                     LocalLLM.shared.unload()
+                    LocalWhisper.shared.unload()
                 }
         }
     }
