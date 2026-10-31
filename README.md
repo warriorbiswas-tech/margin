@@ -2,10 +2,11 @@
 
 A note-taking and PDF annotation app for iPad, built for lectures, textbooks and meetings. Everything, including the AI, runs on the device.
 
-- **Ink and PDFs:** PencilKit writing on paper or PDF pages, highlighter, shapes, lasso, study tape, whiteout and redaction, comments, stamps, signatures.
+- **Ink and PDFs:** PencilKit writing on paper or PDF pages, highlighter, shapes, dashed pen, lasso, study tape, whiteout and redaction, comments, stamps, signatures.
+- **Pages:** tabs for the notes you have open, subfolders, an endless page that grows as you write, page duplication, stickers of your own, and cutting a photo's subject out of its background.
 - **Live Text:** handwriting turns into type where it's written, through Scribble.
 - **Recording:** audio that stays in step with your notes, so tapping a stroke plays what was being said when you wrote it, with a live transcript.
-- **Study:** chat with a note, summaries, flashcards with spaced review, quizzes, mind maps, and filling in what your notes missed from a recording.
+- **Study:** chat with a note, summaries, flashcards with spaced review, quizzes, mind maps, teach-back, explaining or solving a selected area step by step, and filling in what your notes missed from a recording.
 - **Sync:** every note goes to a folder you choose in iCloud Drive.
 
 ## On-device AI

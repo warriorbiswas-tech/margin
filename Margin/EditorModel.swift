@@ -54,7 +54,7 @@ enum AnnotateKind: String, CaseIterable, Identifiable {
 }
 
 enum PenStyle: String, CaseIterable, Identifiable {
-    case ballpoint, fountain, pencil, monoline, crayon, watercolor
+    case ballpoint, fountain, pencil, monoline, dashed, crayon, watercolor
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
     var ink: PKInkingTool.InkType {
@@ -62,7 +62,7 @@ enum PenStyle: String, CaseIterable, Identifiable {
         case .ballpoint: .pen
         case .fountain: .fountainPen
         case .pencil: .pencil
-        case .monoline: .monoline
+        case .monoline, .dashed: .monoline
         case .crayon: .crayon
         case .watercolor: .watercolor
         }
@@ -208,7 +208,8 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     /// Scribble reads the pen's motion, which is far more accurate than reading a picture of the ink, but it only works with a Pencil.
     var scribbleActive: Bool { liveText && tool == .pen && !fingerDrawing && !scribbleUnavailable && playing == nil }
     var aiProgress: String?
-    @ObservationIgnored var printedPages: [String]?
+    var aiAnswer: AIAnswer?
+    @ObservationIgnored var askTask: Task<Void, Never>?
     @ObservationIgnored var liveSince = Date()
     @ObservationIgnored var liveTask: Task<Void, Never>?
     @ObservationIgnored var liveTailID: UUID?
@@ -291,6 +292,8 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     var transcribeProgress = 0.0
 
     init(note: Note, library: Library) {
+        var note = note
+        note.elements.removeAll(where: \.isBlank) // a box left behind when the app closed mid-word would catch later writing
         self.note = note
         self.library = library
         let drawing = library.loadDrawing(note.id)
@@ -488,8 +491,11 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
                     view.backgroundColor = UIColor(hex: el.colorHex).withAlphaComponent(el.revealed ? 0.18 : 1)
                 }
             } else if let file = el.imageFile {
-                let view = elementViews[el.id] ?? {
+                // Undo or a cut-out can change which file an image shows.
+                let view = (elementViews[el.id] as? UIImageView).flatMap { $0.accessibilityIdentifier == file ? $0 : nil } ?? {
+                    elementViews[el.id]?.removeFromSuperview()
                     let v = UIImageView(image: UIImage(contentsOfFile: library.dir(note.id).appendingPathComponent(file).path))
+                    v.accessibilityIdentifier = file
                     v.contentMode = .scaleToFill
                     underlay.addSubview(v)
                     elementViews[el.id] = v
@@ -525,9 +531,9 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         canvas.drawingGestureRecognizer.isEnabled = inking
         zoomCanvas.drawingGestureRecognizer.isEnabled = inking
         overlay.isUserInteractionEnabled = !inking
-        // While writing to Scribble, a Pencil must write rather than scroll the page.
-        canvas.panGestureRecognizer.allowedTouchTypes = scribbleActive
-            ? [UITouch.TouchType.direct.rawValue as NSNumber]
+        // A Pencil only scrolls with a tool that doesn't write. Otherwise a quick stroke could move the page instead.
+        canvas.panGestureRecognizer.allowedTouchTypes = inking || scribbleActive
+            ? [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.indirectPointer.rawValue as NSNumber]
             : [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.pencil.rawValue as NSNumber, UITouch.TouchType.indirectPointer.rawValue as NSNumber]
         if tool != .text, !scribbleActive {
             overlay.commitEditing()
@@ -698,6 +704,10 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.noticePencil()
+                if self.tool == .pen, self.penStyle == .dashed {
+                    self.cutIntoDashes(last)
+                    return
+                }
                 if self.tool == .pen, Prefs.scribbleErase, self.scribbleErase(last) { return }
                 if self.tool == .pen, Prefs.holdForShapes, !self.snapShapes, self.snapIfHeld(last) { return }
                 if self.tool == .pen, self.snapShapes { self.snap(last) }
@@ -755,8 +765,14 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     private func appendPageIfNeeded(after bounds: CGRect) {
-        guard let last = note.pages.last, last.pdfPage == nil,
-              let origin = NoteLayout.origins(note.pages.map(\.height)).last, bounds.maxY > origin else { return }
+        guard let last = note.pages.last, last.pdfPage == nil, let origin = NoteLayout.origins(note.pages.map(\.height)).last else { return }
+        if last.endless == true {
+            guard bounds.maxY > origin + last.height - NoteLayout.paperHeight / 2 else { return }
+            note.pages[note.pages.count - 1].height += NoteLayout.paperHeight
+            rebuildPages()
+            return
+        }
+        guard bounds.maxY > origin else { return }
         note.pages.append(Page(height: last.backgroundFile == nil ? last.height : NoteLayout.paperHeight, style: last.style, color: last.color))
         rebuildPages()
     }
@@ -815,7 +831,6 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             // Repaint existing PDF pages against the reloaded document.
             pageViews.values.forEach { $0.contentKey = nil }
             inkChanged = true
-            printedPages = nil
             setPages(note.pages + pages)
         }
     }
@@ -854,7 +869,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         return el
     }
 
-    func addImage(_ data: Data, transparent: Bool = false) {
+    func addImage(_ data: Data, transparent: Bool = false, offset: CGFloat = 0) {
         guard let image = UIImage(data: data), image.size.width > 0 else {
             message = "That image couldn't be read."
             return
@@ -876,7 +891,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         checkpoint()
         let width = min(420, size.width), height = width * size.height / size.width
         let c = visibleCenter()
-        let el = Element(rect: CGRect(x: max(0, c.x - width / 2), y: c.y - height / 2, width: width, height: height), imageFile: file)
+        let el = Element(rect: CGRect(x: max(0, c.x - width / 2 + offset), y: c.y - height / 2 + offset, width: width, height: height), imageFile: file)
         note.elements.append(el)
         syncElements()
         tool = .text
@@ -964,6 +979,20 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         scheduleSave()
     }
 
+    func exportText() async -> URL? {
+        let pages = await studyPages()
+        let body = pages.enumerated().filter { !$0.element.isEmpty }.map { "## Page \($0.offset + 1)\n\n\($0.element)" }.joined(separator: "\n\n")
+        let name = note.title.replacingOccurrences(of: "/", with: "-")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name.isEmpty ? "Note" : name).appendingPathExtension("md")
+        do {
+            try "# \(note.title)\n\n\(body)\n".write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            message = "Export failed: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
     func exportPDF() async -> URL? {
         saveNow()
         busy = "Exporting…"
@@ -1003,14 +1032,12 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     private func indexInBackground() {
         guard inkChanged || note.searchText.isEmpty, library.beginIndexing(note.id) else { return }
-        let drawing = canvas.drawing, note = note, id = note.id, library = library, pdfURL = library.pdfURL(id)
+        let drawing = canvas.drawing, note = note, id = note.id, library = library
         Task.detached(priority: .utility) {
             // Reading a long PDF's text takes seconds, so none of it happens on the main thread.
-            let doc = PDFDocument(url: pdfURL)
-            let pdfText = doc.map(library.pdfText) ?? ""
-            let scans = library.scannedText(of: note, in: doc).values.filter { !$0.isEmpty }
+            let printed = library.pdfPageText(of: note).sorted { $0.key < $1.key }.map(\.value)
             let ink = Renderer.rects(for: note).map { rect in autoreleasepool { Renderer.recognizeInk(drawing, rect: rect) } }
-            await library.setSearchText(([pdfText] + scans + ink).joined(separator: "\n"), for: id)
+            await library.setSearchText((printed + ink).joined(separator: "\n"), for: id)
         }
     }
 
@@ -1018,23 +1045,19 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     func studyPages() async -> [String] {
         let note = note, drawing = currentDrawing
         if let known = studyCache, known.drawing == drawing, known.pages == note.pages, known.elements == note.elements { return known.text }
-        let library = library, url = library.pdfURL(note.id), held = printedPages
-        let (printed, text): ([String], [String]) = await Task.detached(priority: .userInitiated) {
-            let doc = held == nil ? PDFDocument(url: url) : nil
-            let printed = held ?? note.pages.map { page in page.pdfPage.flatMap { doc?.page(at: $0)?.string } ?? "" }
-            let scans = library.scannedText(of: note, in: doc ?? PDFDocument(url: url))
+        let library = library
+        let text: [String] = await Task.detached(priority: .userInitiated) {
+            let printed = library.pdfPageText(of: note)
             let rects = Renderer.rects(for: note)
-            let text = note.pages.indices.map { i in
+            return note.pages.indices.map { i in
                 autoreleasepool {
                     let ink = Renderer.recognizeInk(drawing, rect: rects[i])
                     let typed = note.elements.filter { !$0.isTape && $0.rect.intersects(rects[i]) }.map { $0.comment ?? $0.text }.filter { $0 != "" }
-                    let page = printed[i].isEmpty ? note.pages[i].pdfPage.flatMap { scans[$0] } ?? "" : printed[i]
+                    let page = note.pages[i].pdfPage.flatMap { printed[$0] } ?? ""
                     return ([page, ink] + typed).filter { !$0.isEmpty }.joined(separator: "\n")
                 }
             }
-            return (printed, text)
         }.value
-        printedPages = printed
         studyCache = (drawing, note.pages, note.elements, text)
         return text
     }

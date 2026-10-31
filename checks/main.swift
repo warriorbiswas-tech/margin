@@ -153,6 +153,15 @@ check(TextTools.bestPassages(query: "dividing", passages: ["plants grow", "a cel
 check(TextTools.plain("## Topic\n- **Bold** point") == "Topic\n•  Bold point", "markers come off")
 check(TextTools.plain("2 * 3 = 6") == "2 * 3 = 6", "a lone asterisk is just a character")
 
+// LaTeX the model writes anyway
+check(TextTools.withoutLaTeX("$$\\text{Speed} = \\frac{120}{2} = 60 \\, \\text{km/h}$$").trimmingCharacters(in: .whitespaces) == "Speed = 120/2 = 60 km/h", "display math becomes text")
+check(TextTools.withoutLaTeX("$ \\boxed{60} $").trimmingCharacters(in: .whitespaces) == "60", "a boxed answer is just the answer")
+check(TextTools.withoutLaTeX("\\frac{a+b}{c}") == "(a+b)/c", "a sum stays grouped")
+check(TextTools.withoutLaTeX("\\frac{\\sqrt{x}}{2}") == "√x/2", "nested commands")
+check(TextTools.withoutLaTeX("x \\rightarrow y") == "x → y", "a longer command isn't cut short")
+check(TextTools.withoutLaTeX("It costs $5 and $6 today.") == "It costs $5 and $6 today.", "money stays")
+check(TextTools.withoutLaTeX("$x^{2} = 4$") == "x^2 = 4", "inline math loses its dollars")
+
 // Undo and redo
 var history = History<Int>(limit: 3)
 check(history.undo(from: 0) == nil && !history.canUndo, "nothing to undo at first")

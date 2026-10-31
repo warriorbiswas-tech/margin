@@ -73,6 +73,35 @@ struct ScannerSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ controller: VNDocumentCameraViewController, context: Context) {}
 }
 
+/// A labelled switch in the options bar. Off it reads as plain text, so colour only ever means something is on.
+struct OptionToggle: View {
+    let title: String
+    var icon: String?
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            Group {
+                if let icon {
+                    Label(title, systemImage: icon)
+                } else {
+                    Text(title)
+                }
+            }
+            .font(.subheadline.weight(isOn ? .semibold : .regular))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 10)
+            .frame(minHeight: 34)
+            .background(isOn ? Color.accentColor.opacity(0.14) : .clear, in: Capsule())
+            .foregroundStyle(isOn ? Color.accentColor : Color.primary)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isOn ? "On" : "Off")
+    }
+}
+
 struct IconButton: View {
     @Environment(\.isEnabled) private var isEnabled
     let icon: String
@@ -107,9 +136,64 @@ private struct ZoomMenu: View {
                 Button("\(percent)%") { model.setZoom(percent: CGFloat(percent)) }
             }
         } label: {
-            Text("\(model.zoomPercent)%").font(.subheadline.monospacedDigit()).frame(minWidth: 46, minHeight: 42)
+            Text("\(model.zoomPercent)%").font(.subheadline.monospacedDigit()).foregroundStyle(.secondary).frame(minWidth: 46, minHeight: 42)
         }
         .accessibilityLabel("Zoom, \(model.zoomPercent) percent")
+    }
+}
+
+/// The notes you have open, one tap apart. They stay open until you close them, even after leaving for the library.
+private struct TabStrip: View {
+    let model: EditorModel
+    let onOpen: (UUID) -> Void
+    let onLeave: () -> Void
+
+    private var tabs: [Note] { model.library.tabs.compactMap { id in model.library.notes.first { $0.id == id && $0.deletedAt == nil } } }
+
+    var body: some View {
+        if tabs.count > 1 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(tabs) { note in
+                        let current = note.id == model.note.id
+                        HStack(spacing: 2) {
+                            Button {
+                                if !current { onOpen(note.id) }
+                            } label: {
+                                Text(note.title).font(.footnote.weight(current ? .semibold : .regular)).lineLimit(1).frame(maxWidth: 170)
+                                    .foregroundStyle(current ? .primary : .secondary)
+                                    .padding(.leading, 12)
+                                    .frame(minHeight: 32)
+                            }
+                            .buttonStyle(.plain)
+                            Button("Close \(note.title)", systemImage: "xmark") { close(note) }
+                                .labelStyle(.iconOnly)
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .buttonStyle(.plain)
+                                .frame(width: 28, height: 32)
+                                .contentShape(Rectangle())
+                        }
+                        .background {
+                            if current {
+                                RoundedRectangle(cornerRadius: 8).fill(Color(.systemBackground)).shadow(color: .black.opacity(0.1), radius: 3, y: 1)
+                            }
+                        }
+                        .accessibilityAddTraits(current ? .isSelected : [])
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+            }
+            .background(.bar)
+        }
+    }
+
+    private func close(_ note: Note) {
+        let others = tabs.filter { $0.id != note.id }
+        model.library.closeTab(note.id)
+        guard note.id == model.note.id else { return }
+        if let next = others.last { onOpen(next.id) } else { onLeave() }
     }
 }
 
@@ -140,6 +224,7 @@ private struct PageThumbnail: View {
 struct EditorView: View {
     @Bindable var model: EditorModel
     let onClose: () -> Void
+    let onOpen: (UUID) -> Void
 
     enum Panel: String, Identifiable {
         case pages, transcript, assistant, find, versions, excerpts, stickers, scan, noteLink, signature, fontPicker
@@ -161,7 +246,7 @@ struct EditorView: View {
     @State private var showPhotos = false
     @State private var showPDFImporter = false
     @State private var showAudioImporter = false
-    @State private var photoItem: PhotosPickerItem?
+    @State private var photoItems: [PhotosPickerItem] = []
     @State private var exportURL: URL?
     @State private var renaming = false
     @State private var draftTitle = ""
@@ -177,6 +262,7 @@ struct EditorView: View {
         ZStack(alignment: .topTrailing) {
             VStack(spacing: 0) {
                 if !model.focusMode {
+                    TabStrip(model: model, onOpen: onOpen, onLeave: onClose)
                     topBar
                     if model.playing == nil { optionsBar }
                     Divider()
@@ -253,18 +339,21 @@ struct EditorView: View {
             }
         }
         .sheet(item: $exportURL) { url in ActivitySheet(url: url) }
-        .photosPicker(isPresented: $showPhotos, selection: $photoItem, matching: .images)
+        .sheet(item: $model.aiAnswer) { _ in AnswerSheet(model: model) }
+        .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 20, matching: .images)
         .fileImporter(isPresented: $showPDFImporter, allowedContentTypes: DocumentConverter.importable) { result in
             if case let .success(url) = result { model.importFile(from: url) }
         }
         .fileImporter(isPresented: $showAudioImporter, allowedContentTypes: [.audio]) { result in
             if case let .success(url) = result { model.importAudio(from: url) }
         }
-        .onChange(of: photoItem) { _, item in
-            guard let item else { return }
+        .onChange(of: photoItems) { _, items in
+            guard !items.isEmpty else { return }
             Task {
-                if let data = try? await item.loadTransferable(type: Data.self) { model.addImage(data) }
-                photoItem = nil
+                for (i, item) in items.enumerated() {
+                    if let data = try? await item.loadTransferable(type: Data.self) { model.addImage(data, offset: CGFloat(i) * 28) }
+                }
+                photoItems = []
             }
         }
         .onChange(of: scenePhase) { _, phase in
@@ -322,6 +411,7 @@ struct EditorView: View {
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(.regularMaterial, in: Capsule())
+                    .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
                     .padding(.bottom, 76)
                     .transition(.opacity)
             }
@@ -339,8 +429,13 @@ struct EditorView: View {
     private var tools: some View {
         HStack(spacing: 1) {
             ForEach(Tool.allCases) { tool in
+                // Writing, selecting and marking up are separate kinds of tool.
+                if tool == .text || tool == .annotate {
+                    Rectangle().fill(.separator).frame(width: 1, height: 22).padding(.horizontal, 4).accessibilityHidden(true)
+                }
                 IconButton(icon: tool.icon, active: model.tool == tool, label: tool.title) { model.tool = tool }
             }
+            Rectangle().fill(.separator).frame(width: 1, height: 22).padding(.horizontal, 4).accessibilityHidden(true)
             insertMenu
         }
     }
@@ -378,6 +473,7 @@ struct EditorView: View {
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 4)
+        .tint(.primary)
         .background(.bar)
     }
 
@@ -388,7 +484,7 @@ struct EditorView: View {
                 draftTitle = model.note.title
                 renaming = true
             } label: {
-                Text(model.note.title).font(.headline).lineLimit(1).frame(minWidth: 40, maxWidth: 170, alignment: .leading)
+                Text(model.note.title).font(.system(.headline, design: .serif)).lineLimit(1).frame(minWidth: 40, maxWidth: 170, alignment: .leading)
             }
             .buttonStyle(.plain)
             .accessibilityHint("Rename")
@@ -413,7 +509,7 @@ struct EditorView: View {
 
     private var insertMenu: some View {
         Menu {
-            Button("Photo", systemImage: "photo") { showPhotos = true }
+            Button("Photos", systemImage: "photo") { showPhotos = true }
             Button("Scan Document", systemImage: "doc.viewfinder") { panel = .scan }
                 .disabled(!VNDocumentCameraViewController.isSupported)
             Button("PDF or Document", systemImage: "doc.badge.plus") { showPDFImporter = true }
@@ -512,6 +608,7 @@ struct EditorView: View {
     private var moreMenu: some View {
         Menu {
             Button("Export PDF", systemImage: "square.and.arrow.up") { Task { exportURL = await model.exportPDF() } }
+            Button("Export Text", systemImage: "doc.plaintext") { Task { exportURL = await model.exportText() } }
             Button("Find in Note", systemImage: "magnifyingglass") { panel = .find }
             Button("Excerpts", systemImage: "scissors") { panel = .excerpts }
             Button("Version History", systemImage: "clock.arrow.circlepath") {
@@ -556,8 +653,7 @@ struct EditorView: View {
                     widthPicker([12, 20, 32], selection: $model.highlightWidth)
                     colorRow(highlights, selection: $model.highlightColor)
                     if model.highlightMark == .highlight {
-                        Toggle(isOn: $snapHighlights) { Label("Snap to Text", systemImage: "text.alignleft") }
-                            .toggleStyle(.button)
+                        OptionToggle(title: "Snap to Text", icon: "text.alignleft", isOn: $snapHighlights)
                     }
                 case .eraser:
                     Picker("Eraser", selection: $model.eraseWholeStroke) {
@@ -577,14 +673,17 @@ struct EditorView: View {
                         model.textFont = family
                         model.applyTextStyle()
                     }
-                    Toggle(isOn: $model.textBold) { Image(systemName: "bold").accessibilityLabel("Bold") }
-                        .toggleStyle(.button)
+                    OptionToggle(title: "Bold", isOn: $model.textBold)
                         .onChange(of: model.textBold) { model.applyTextStyle() }
                     colorRow(swatches, selection: $model.textColor)
                         .onChange(of: model.textColor) { model.applyTextStyle() }
                     if let selected = model.selectedElement {
                         if selected.link != nil {
                             Button("Open Link", systemImage: "arrow.up.right") { model.openLink(selected) }
+                        }
+                        if selected.imageFile != nil {
+                            Button("Cut Out Subject", systemImage: "person.crop.rectangle") { Task { await model.cutOutSubject(selected.id) } }
+                            Button("Save as Sticker", systemImage: "seal") { model.saveAsSticker(selected.id) }
                         }
                         Button("Delete", systemImage: "trash", role: .destructive) { model.deleteSelected() }
                     } else {
@@ -605,8 +704,8 @@ struct EditorView: View {
             }
             .padding(.leading, 12)
             .padding(.trailing, 36)
+            .tint(.primary)
         }
-        .scrollIndicatorsFlash(onAppear: true)
         // Fading the edge shows there's more to scroll to.
         .mask(LinearGradient(stops: [.init(color: .black, location: 0), .init(color: .black, location: 0.95), .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing))
         .frame(height: 44)
@@ -624,8 +723,7 @@ struct EditorView: View {
         .pickerStyle(.menu)
         widthPicker([1.5, 3, 6], selection: $model.penWidth)
         colorRow(swatches, selection: $model.penColor)
-        Toggle(isOn: $model.liveText) { Label("Live Text", systemImage: "character.cursor.ibeam") }
-            .toggleStyle(.button)
+        OptionToggle(title: "Live Text", icon: "character.cursor.ibeam", isOn: $model.liveText)
         if model.liveText {
             IconButton(icon: "keyboard", label: "Type with Keyboard") { model.typeWithKeyboard() }
             fontMenu(TextFonts.title(model.liveFont), target: .live) { model.liveFont = $0 }
@@ -636,10 +734,8 @@ struct EditorView: View {
                 }
             }
         }
-        Toggle(isOn: $model.snapShapes) { Label("Shapes", systemImage: "scribble.variable") }
-            .toggleStyle(.button)
-        Toggle(isOn: $model.rulerOn) { Label("Ruler", systemImage: "ruler") }
-            .toggleStyle(.button)
+        OptionToggle(title: "Shapes", icon: "scribble.variable", isOn: $model.snapShapes)
+        OptionToggle(title: "Ruler", icon: "ruler", isOn: $model.rulerOn)
         Divider().frame(height: 24)
         ForEach(presets) { preset in
             Button {
@@ -696,6 +792,11 @@ struct EditorView: View {
             }
             Button("Copy Text", systemImage: "doc.on.doc") { Task { await model.copyRegionText() } }
             if AI.isAvailable {
+                Menu("Ask AI", systemImage: "sparkles") {
+                    ForEach(AskMode.allCases) { mode in
+                        Button(mode.rawValue, systemImage: mode.icon) { model.askAI(mode) }
+                    }
+                }
                 Menu("Translate", systemImage: "character.bubble") {
                     ForEach(["English", "Hindi", "Spanish", "French", "German", "Chinese", "Japanese", "Arabic"], id: \.self) { language in
                         Button(language) { Task { await model.translateRegion(to: language) } }
@@ -1067,6 +1168,7 @@ struct PagesSheet: View {
                     })
                 }
             }
+            Button("Duplicate Page", systemImage: "plus.square.on.square") { model.duplicatePage(index) }
             Button("Insert Blank Page After", systemImage: "plus.rectangle.portrait") { model.insertBlankPage(after: index) }
             Button("Convert Handwriting to Type", systemImage: "character.cursor.ibeam") {
                 Task {

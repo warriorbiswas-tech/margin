@@ -1,10 +1,12 @@
 import SwiftUI
 
 enum StudyError: LocalizedError {
-    case emptyNote, noTranscript
+    case emptyNote, emptySelection, noTranscript, emptyExplanation
     var errorDescription: String? {
         switch self {
         case .emptyNote: "There's nothing in this note to work from yet."
+        case .emptySelection: "No text could be read in that area. Try selecting printed text or clearer handwriting."
+        case .emptyExplanation: "Write your explanation first."
         case .noTranscript: "This needs a recording with a transcript. Record the talk, or transcribe a recording from the playback bar."
         }
     }
@@ -98,8 +100,19 @@ struct AssistantSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     enum Tab: String, CaseIterable, Identifiable {
-        case summary = "Summary", chat = "Chat", cards = "Flashcards", quiz = "Quiz", map = "Mind Map", finish = "Finish Notes"
+        case chat = "Chat", summary = "Summary", cards = "Flashcards", quiz = "Quiz", map = "Mind Map", teach = "Teach Back", finish = "Finish Notes"
         var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .chat: "bubble.left.and.text.bubble.right"
+            case .summary: "text.alignleft"
+            case .cards: "rectangle.on.rectangle"
+            case .quiz: "checklist"
+            case .map: "point.3.connected.trianglepath.dotted"
+            case .teach: "person.wave.2"
+            case .finish: "text.badge.plus"
+            }
+        }
     }
     @State private var tab = Tab.chat
     @State private var wholeNote = true
@@ -112,12 +125,16 @@ struct AssistantSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                Picker("Mode", selection: $tab) {
-                    ForEach(Tab.allCases) { Text($0.rawValue).tag($0) }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(Tab.allCases) { option in
+                            OptionToggle(title: option.rawValue, icon: option.icon, isOn: Binding(get: { tab == option }, set: { if $0 { tab = option } }))
+                        }
+                    }
+                    .padding(.horizontal)
+                    .padding(.vertical, 10)
                 }
-                .pickerStyle(.segmented)
-                .padding()
-                if tab != .chat, tab != .finish, model.note.pages.count > 1 { scopeBar }
+                if tab != .chat, tab != .finish, tab != .teach, model.note.pages.count > 1 { scopeBar }
                 if let progress = model.aiProgress {
                     Text(progress).font(.footnote).foregroundStyle(.secondary).padding(.horizontal).padding(.bottom, 6)
                 }
@@ -137,6 +154,8 @@ struct AssistantSheet: View {
                         QuizView { try await AI.quiz(from: try await nonEmptyText(), using: model.digester()) }
                     case .map:
                         MindMapView(model: model) { try await AI.mindMap(from: try await nonEmptyText(), using: model.digester()) }
+                    case .teach:
+                        TeachBackView(model: model)
                     case .finish:
                         GeneratedText(button: "Fill In What I Missed", insertInto: model) { partial in
                             guard !model.transcriptText.isEmpty else { throw StudyError.noTranscript }
@@ -192,6 +211,70 @@ struct AssistantSheet: View {
     }
 }
 
+struct TeachBackView: View {
+    let model: EditorModel
+    @State private var explanation = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Explain a topic from this note in your own words. Margin compares it with your notes and shows you what's missing.")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
+            TextEditor(text: $explanation)
+                .frame(height: 150)
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal)
+                .accessibilityLabel("Your explanation")
+            GeneratedText(button: "Check My Understanding", insertInto: model) { partial in
+                let said = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !said.isEmpty else { throw StudyError.emptyExplanation }
+                return try await AI.reviewExplanation(said, against: await model.chatContext(for: said), onPartial: partial)
+            }
+        }
+    }
+}
+
+struct AnswerSheet: View {
+    let model: EditorModel
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let answer = model.aiAnswer {
+                        if answer.working, answer.text.isEmpty {
+                            Label { Text("Thinking…") } icon: { ProgressView() }.foregroundStyle(.secondary)
+                        }
+                        if let failure = answer.failure { Text(failure).foregroundStyle(.red) }
+                        Text(TextTools.styled(answer.text)).lineSpacing(3).textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+            }
+            .navigationTitle(model.aiAnswer?.title ?? "")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    if let answer = model.aiAnswer, !answer.working, !answer.text.isEmpty {
+                        Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = TextTools.plain(answer.text) }
+                        Button("Insert into Note", systemImage: "text.badge.plus") {
+                            model.insertText(TextTools.plain(answer.text))
+                            dismiss()
+                        }
+                    }
+                }
+            }
+        }
+        .onDisappear { model.askTask?.cancel() }
+    }
+}
+
 struct GeneratedText: View {
     let button: String
     let insertInto: EditorModel
@@ -215,7 +298,7 @@ struct GeneratedText: View {
                 }
                 if let error { Text(error).foregroundStyle(.red) }
                 if !text.isEmpty {
-                    Text(TextTools.styled(text)).textSelection(.enabled)
+                    Text(TextTools.styled(text)).lineSpacing(3).textSelection(.enabled)
                     if !working {
                         HStack {
                             Button("Insert into Note", systemImage: "text.badge.plus") { insertInto.insertText(TextTools.plain(text)) }
@@ -267,9 +350,11 @@ struct ChatView: View {
                         }
                         ForEach(Array(messages.enumerated()), id: \.offset) { i, message in
                             Text(message.role == "user" ? AttributedString(message.text) : TextTools.styled(message.text))
+                                .lineSpacing(3)
                                 .textSelection(.enabled)
-                                .padding(10)
-                                .background(message.role == "user" ? Color.accentColor.opacity(0.14) : Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+                                .padding(.horizontal, message.role == "user" ? 14 : 0)
+                                .padding(.vertical, message.role == "user" ? 9 : 2)
+                                .background(message.role == "user" ? Color.accentColor.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 18))
                                 .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
                                 .id(i)
                         }
@@ -288,7 +373,10 @@ struct ChatView: View {
             Divider()
             HStack {
                 TextField("Ask a question", text: $draft, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1...5)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 18))
                     .onSubmit(send)
                 if working {
                     Button("Stop", systemImage: "stop.circle.fill") { task?.cancel() }
@@ -684,10 +772,14 @@ struct ExcerptsSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("Copy All Highlights", systemImage: "doc.on.doc") {
-                        UIPasteboard.general.string = model.note.excerpts.compactMap(\.text).joined(separator: "\n\n")
+                    Menu("More", systemImage: "ellipsis.circle") {
+                        Button("Copy All Highlights", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = model.note.excerpts.compactMap(\.text).joined(separator: "\n\n")
+                        }
+                        .disabled(!model.note.excerpts.contains { $0.text != nil })
+                        Button("Delete All Excerpts", systemImage: "trash", role: .destructive) { model.deleteAllExcerpts() }
+                            .disabled(model.note.excerpts.isEmpty)
                     }
-                    .disabled(!model.note.excerpts.contains { $0.text != nil })
                 }
             }
         }
@@ -697,6 +789,7 @@ struct ExcerptsSheet: View {
 struct StickerSheet: View {
     let model: EditorModel
     @Environment(\.dismiss) private var dismiss
+    @State private var mine: [URL] = []
     private let groups: [(String, String)] = [
         ("Study", "📌 📎 ✏️ 📝 📚 📖 🎓 🧠 💡 🔬 🧪 🧮 📐 📏 🗂️ 📅 ⏰ ✅ ❌ ❓ ❗ ⭐ 🔥 🎯"),
         ("Reactions", "😀 😂 🥳 😎 🤔 😴 😭 🤯 👍 👎 👏 🙌 💪 ❤️ 💯 🎉"),
@@ -708,6 +801,29 @@ struct StickerSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    if !mine.isEmpty {
+                        Text("My Stickers").font(.headline)
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 88))], spacing: 10) {
+                            ForEach(mine, id: \.self) { url in
+                                Button {
+                                    if let data = try? Data(contentsOf: url) { model.addImage(data, transparent: true) }
+                                    dismiss()
+                                } label: {
+                                    if let image = UIImage(contentsOfFile: url.path) {
+                                        Image(uiImage: image).resizable().scaledToFit().frame(width: 88, height: 88)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Sticker")
+                                .contextMenu {
+                                    Button("Remove Sticker", systemImage: "trash", role: .destructive) {
+                                        try? FileManager.default.removeItem(at: url)
+                                        mine = model.library.stickers
+                                    }
+                                }
+                            }
+                        }
+                    }
                     ForEach(groups, id: \.0) { group in
                         Text(group.0).font(.headline)
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 56))], spacing: 10) {
@@ -728,6 +844,7 @@ struct StickerSheet: View {
             .navigationTitle("Stickers")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .onAppear { mine = model.library.stickers }
         }
     }
 }

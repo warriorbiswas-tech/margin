@@ -85,13 +85,25 @@ extension EditorModel {
             guard let self, let found else { return }
             let strokes = self.canvas.drawing.strokes
             guard strokes.contains(where: { $0.path.creationDate == date }) else { return } // undone in the meantime
-            self.note.excerpts.append(Excerpt(text: found.text, pageID: pageID, rect: stroke.renderBounds))
+            self.keepExcerpt(Excerpt(text: found.text, pageID: pageID, rect: stroke.renderBounds))
             // A highlight stays exactly as drawn, while underlines and the like only make sense along the words.
             if mark != .highlight || Prefs.snapHighlights {
                 self.placeMark(mark, along: found.lines, replacing: stroke, in: strokes)
             }
             self.scheduleSave()
         }
+    }
+
+    /// Going over the same words again refines the excerpt rather than adding another.
+    private func keepExcerpt(_ excerpt: Excerpt) {
+        if let i = note.excerpts.indices.last, note.excerpts[i].pageID == excerpt.pageID, let previous = note.excerpts[i].text, let text = excerpt.text {
+            if previous.contains(text) { return }
+            if text.contains(previous) {
+                note.excerpts[i] = excerpt
+                return
+            }
+        }
+        note.excerpts.append(excerpt)
     }
 
     private nonisolated static func selectedWords(in url: URL, page pdfIndex: Int, from first: CGPoint, to last: CGPoint, pageTop origin: CGFloat) -> (text: String, lines: [CGRect])? {
@@ -103,16 +115,36 @@ extension EditorModel {
         func toPDF(_ p: CGPoint) -> CGPoint {
             CGPoint(x: p.x / scale, y: box.height - (p.y - origin) / scale).applying(fromBox)
         }
-        guard let selection = page.selection(from: toPDF(first), to: toPDF(last)),
-              !(selection.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard let touched = page.selection(from: toPDF(first), to: toPDF(last)), let selection = wholeWords(of: touched, on: page) else { return nil }
         let byLine = selection.selectionsByLine()
         let text = byLine.compactMap(\.string).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.filter(\.isLetter).count >= 3 else { return nil } // a stray dot or a stroke across an equation's symbols
         let lines: [CGRect] = byLine.compactMap { line in
             let r = line.bounds(for: page).applying(toBox)
             guard r.width > 1 else { return nil }
             return CGRect(x: r.minX * scale, y: origin + (box.height - r.maxY) * scale, width: r.width * scale, height: r.height * scale)
         }
         return (text, lines)
+    }
+
+    /// A pen rarely starts and stops on a word's edge, and half a word is no use as an excerpt.
+    private nonisolated static func wholeWords(of selection: PDFSelection, on page: PDFPage) -> PDFSelection? {
+        guard let text = page.string as NSString?, selection.numberOfTextRanges(on: page) > 0 else { return nil }
+        var range = selection.range(at: 0, on: page)
+        for i in 1..<max(selection.numberOfTextRanges(on: page), 1) {
+            range = NSUnionRange(range, selection.range(at: i, on: page))
+        }
+        guard range.location != NSNotFound, NSMaxRange(range) <= text.length, range.length > 0 else { return nil }
+        let letters = CharacterSet.alphanumerics
+        func isLetter(_ i: Int) -> Bool { UnicodeScalar(text.character(at: i)).map(letters.contains) ?? false }
+        while range.location > 0, isLetter(range.location - 1), isLetter(range.location) {
+            range.location -= 1
+            range.length += 1
+        }
+        while NSMaxRange(range) < text.length, isLetter(NSMaxRange(range)), isLetter(NSMaxRange(range) - 1) {
+            range.length += 1
+        }
+        return page.selection(for: range)
     }
 
     private func placeMark(_ mark: HighlightMark, along rects: [CGRect], replacing stroke: PKStroke, in current: [PKStroke]) {
@@ -146,6 +178,49 @@ extension EditorModel {
         strokes.removeLast()
         strokes += lines
         setInk(PKDrawing(strokes: strokes))
+    }
+
+    /// PencilKit has no dashed ink, so a finished stroke is cut into dashes along its path.
+    func cutIntoDashes(_ stroke: PKStroke) {
+        var strokes = canvas.drawing.strokes
+        guard strokes.last?.path.creationDate == stroke.path.creationDate else { return }
+        let points = Array(stroke.path.interpolatedPoints(by: .distance(2)))
+        let dash = max(Int(penWidth * 2.5), 5), gap = max(Int(penWidth * 1.5), 4)
+        guard points.count > dash + gap else { return }
+        var dashes: [PKStroke] = []
+        for start in stride(from: 0, to: points.count, by: dash + gap) {
+            let piece = Array(points[start..<min(start + dash, points.count)])
+            guard piece.count > 1 else { continue }
+            dashes.append(PKStroke(ink: stroke.ink, path: PKStrokePath(controlPoints: piece, creationDate: stroke.path.creationDate), transform: stroke.transform))
+        }
+        strokes.removeLast()
+        setInk(PKDrawing(strokes: strokes + dashes))
+    }
+
+    // MARK: Ask AI
+
+    func askAI(_ mode: AskMode) {
+        guard let rect = regionRect else { return }
+        askTask?.cancel()
+        aiAnswer = AIAnswer(title: mode.rawValue)
+        askTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let text = await self.regionText(rect)
+                guard !text.isEmpty else { throw StudyError.emptySelection }
+                let answer = try await AI.ask(mode, about: text) { [weak self] partial in
+                    Task { @MainActor [weak self] in
+                        if self?.aiAnswer?.working == true { self?.aiAnswer?.text = partial }
+                    }
+                }
+                self.aiAnswer?.text = answer
+            } catch is CancellationError {
+                return
+            } catch {
+                self.aiAnswer?.failure = error.localizedDescription
+            }
+            self.aiAnswer?.working = false
+        }
     }
 
     // MARK: Area actions
@@ -619,6 +694,32 @@ extension EditorModel {
         addImage(data, transparent: true)
     }
 
+    func duplicatePage(_ index: Int) {
+        guard note.pages.indices.contains(index) else { return }
+        let source = Renderer.rects(for: note)[index], distance = source.height + NoteLayout.gap
+        var copy = note.pages[index]
+        copy.id = UUID()
+        copy.bookmarked = false
+        var pages = note.pages
+        pages.insert(copy, at: index + 1)
+        setPages(pages)
+        let onPage = canvas.drawing.strokes.filter { source.contains(CGPoint(x: $0.renderBounds.midX, y: $0.renderBounds.midY)) }
+        let moved = onPage.map { stroke -> PKStroke in
+            var stroke = stroke
+            stroke.transform = stroke.transform.concatenating(CGAffineTransform(translationX: 0, y: distance))
+            return stroke
+        }
+        setInk(PKDrawing(strokes: canvas.drawing.strokes + moved))
+        note.elements += note.elements.filter { source.contains(CGPoint(x: $0.rect.midX, y: $0.rect.midY)) }.map { el in
+            var el = el
+            el.id = UUID()
+            el.rect.origin.y += distance
+            return el
+        }
+        syncElements()
+        scheduleSave()
+    }
+
     func insertBlankPage(after index: Int) {
         var pages = note.pages
         let paper = pages[...index].last { $0.pdfPage == nil }
@@ -733,6 +834,7 @@ extension EditorModel {
 
     func regionToExcerpt() {
         guard let rect = regionRect, let file = saveRegionImage(rect) else { return }
+        checkpoint()
         let index = NoteLayout.pageIndex(y: rect.midY, heights: note.pages.map(\.height))
         note.excerpts.append(Excerpt(imageFile: file, pageID: note.pages[index].id, rect: rect))
         regionRect = nil
@@ -755,12 +857,42 @@ extension EditorModel {
         if rects.indices.contains(index) { jump(to: rects[index]) }
     }
 
+    /// The picture of an excerpt stays in the note's folder, since undo can bring the excerpt back.
     func deleteExcerpt(_ excerpt: Excerpt) {
-        if let file = excerpt.imageFile {
-            try? FileManager.default.removeItem(at: library.dir(note.id).appendingPathComponent(file))
-        }
+        checkpoint()
         note.excerpts.removeAll { $0.id == excerpt.id }
         scheduleSave()
+    }
+
+    func deleteAllExcerpts() {
+        checkpoint()
+        note.excerpts.removeAll()
+        scheduleSave()
+    }
+
+    // MARK: Images
+
+    func cutOutSubject(_ id: UUID) async {
+        guard let file = note.elements.first(where: { $0.id == id })?.imageFile else { return }
+        let source = library.dir(note.id).appendingPathComponent(file)
+        await working("Cutting out…") {
+            let png = try await Task.detached(priority: .userInitiated) { try Renderer.subjectCutout(of: source) }.value
+            let name = "img-\(UUID().uuidString).png"
+            try png.write(to: library.dir(note.id).appendingPathComponent(name), options: .atomic)
+            checkpoint()
+            updateElement(id) { $0.imageFile = name }
+            overlay.refreshSelection()
+        }
+    }
+
+    func saveAsSticker(_ id: UUID) {
+        guard let file = note.elements.first(where: { $0.id == id })?.imageFile, let image = image(named: file), let png = image.pngData() else { return }
+        do {
+            try library.saveSticker(png)
+            notify("Saved to My Stickers")
+        } catch {
+            message = "Couldn't save the sticker: \(error.localizedDescription)"
+        }
     }
 
     // MARK: Text, stickers, sticky notes
@@ -867,15 +999,12 @@ extension EditorModel {
 
     func pageTexts() async -> [String] {
         let note = note, drawing = currentDrawing, library = library
-        let pdfURL = library.pdfURL(note.id)
         return await Task.detached {
-            let doc = PDFDocument(url: pdfURL)
-            let printed = note.pages.map { page in page.pdfPage.flatMap { doc?.page(at: $0)?.string } ?? "" }
-            let scans = library.scannedText(of: note, in: doc)
+            let printed = library.pdfPageText(of: note)
             let rects = Renderer.rects(for: note)
             return note.pages.indices.map { i in
                 autoreleasepool {
-                    let text = printed[i].isEmpty ? note.pages[i].pdfPage.flatMap { scans[$0] } ?? "" : printed[i]
+                    let text = note.pages[i].pdfPage.flatMap { printed[$0] } ?? ""
                     let ink = Renderer.recognizeInk(drawing, rect: rects[i])
                     let typed = note.elements.filter { $0.rect.intersects(rects[i]) }.map(\.text).joined(separator: "\n")
                     return [text, ink, typed].joined(separator: "\n")

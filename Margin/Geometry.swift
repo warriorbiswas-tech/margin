@@ -427,9 +427,47 @@ enum TextTools {
         return chosen
     }
 
+    private static let latexSymbols = [
+        "\\times": "×", "\\cdot": "·", "\\div": "÷", "\\pm": "±", "\\approx": "≈", "\\neq": "≠", "\\leq": "≤", "\\geq": "≥",
+        "\\rightarrow": "→", "\\to": "→", "\\pi": "π", "\\theta": "θ", "\\alpha": "α", "\\beta": "β", "\\Delta": "Δ", "\\infty": "∞",
+        "\\int": "∫", "\\sum": "Σ", "\\quad": " ", "\\,": " ", "\\;": " ", "\\left": "", "\\right": "", "\\[": "", "\\]": "", "\\(": "", "\\)": "",
+    ]
+
+    /// The model writes LaTeX even when told not to, and a text view would show its commands raw.
+    static func withoutLaTeX(_ text: String) -> String {
+        var out = text.replacingOccurrences(of: "$$", with: "")
+        // Only a $ pair holding math is a delimiter. "$5 and $6" is money.
+        out = out.replacingOccurrences(of: #"\$([^$\n]*[\\^=_][^$\n]*)\$"#, with: "$1", options: .regularExpression)
+        // Longest first, so \\rightarrow isn't read as \\right followed by "arrow".
+        for (command, symbol) in latexSymbols.sorted(by: { $0.key.count > $1.key.count }) {
+            out = out.replacingOccurrences(of: command, with: symbol)
+        }
+        func grouped(_ part: String) -> String { part.allSatisfy { $0.isLetter || $0.isNumber || $0 == "." || $0 == "√" } ? part : "(\(part))" }
+        func replace(_ pattern: String, _ build: ([String]) -> String) -> Bool {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+            let whole = NSRange(out.startIndex..., in: out)
+            guard let match = regex.firstMatch(in: out, range: whole), let range = Range(match.range, in: out) else { return false }
+            let parts = (1..<match.numberOfRanges).compactMap { Range(match.range(at: $0), in: out).map { String(out[$0]) } }
+            out.replaceSubrange(range, with: build(parts))
+            return true
+        }
+        // Innermost first, and capped because each pass removes one command from text that could be anything.
+        for _ in 0..<64 {
+            let changed = replace(#"\\(?:text|mathrm|mathbf|boxed)\{([^{}]*)\}"#) { $0[0] }
+                || replace(#"\\[dt]?frac\{([^{}]*)\}\{([^{}]*)\}"#) { "\(grouped($0[0]))/\(grouped($0[1]))" }
+                || replace(#"\\sqrt\{([^{}]*)\}"#) { "√\(grouped($0[0]))" }
+                || replace(#"\^\{([^{}]*)\}"#) { "^\(grouped($0[0]))" }
+                || replace(#"_\{([^{}]*)\}"#) { "_\($0[0])" }
+            if !changed { break }
+        }
+        // What the commands leave behind. Spaces opening a line are kept, since they indent a bullet.
+        return out.replacingOccurrences(of: #"(?<=\S) {2,}"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+    }
+
     /// The small subset of Markdown the model writes, for showing on screen.
     static func styled(_ answer: String) -> AttributedString {
-        let lines = answer.components(separatedBy: "\n").map { line -> String in
+        let lines = withoutLaTeX(answer).components(separatedBy: "\n").map { line -> String in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("#") {
                 let title = trimmed.drop { $0 == "#" }.trimmingCharacters(in: .whitespaces)
@@ -517,7 +555,7 @@ enum TextTools {
 
     /// Extracts the concise final answer from a calculation response, stripping explanations and markdown.
     static func cleanMathAnswer(_ raw: String) -> String {
-        var text = visibleAnswer(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = withoutLaTeX(visibleAnswer(raw)).trimmingCharacters(in: .whitespacesAndNewlines)
         if let match = text.range(of: "(?i)final answer:?\\s*", options: .regularExpression) {
             text = String(text[match.upperBound...])
         } else if let match = text.range(of: "(?i)answer:?\\s*", options: .regularExpression) {

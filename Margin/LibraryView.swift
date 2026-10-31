@@ -27,7 +27,7 @@ struct LibraryView: View {
     @State private var pendingSetup: NoteSetup?
     @State private var creating = false
     @State private var deleting: Note?
-    @State private var importingDocument = false
+    @State private var busy: String?
     @AppStorage("iCloudBannerDismissed") private var bannerDismissed = false
 
     struct TextPrompt {
@@ -81,24 +81,24 @@ struct LibraryView: View {
             }
         }
         .overlay {
-            if importingDocument {
-                ProgressView("Importing…")
+            if let busy {
+                ProgressView(busy)
                     .padding(20)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
             }
         }
         .onAppear { resumeLastNote() }
-        .fullScreenCover(item: $editor) { model in
-            EditorView(model: model) {
-                model.close()
-                editor = nil
-                UserDefaults.standard.removeObject(forKey: Self.lastNoteKey)
-            }
-            .onChange(of: model.openNoteRequest) { _, id in
-                guard let id, let target = library.notes.first(where: { $0.id == id }) else { return }
-                model.close()
-                editor = nil
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { open(target) }
+        .fullScreenCover(isPresented: Binding(get: { editor != nil }, set: { if !$0 { editor = nil } })) {
+            if let model = editor {
+                EditorView(model: model, onClose: {
+                    model.close()
+                    editor = nil
+                    UserDefaults.standard.removeObject(forKey: Self.lastNoteKey)
+                }, onOpen: { switchTo($0, from: model) })
+                .id(model.id)
+                .onChange(of: model.openNoteRequest) { _, id in
+                    if let id { switchTo(id, from: model) }
+                }
             }
         }
         .sheet(item: $reminderNote) { note in ReminderSheet(note: note) }
@@ -129,11 +129,42 @@ struct LibraryView: View {
     }
 
     private func importDocument(_ url: URL) {
-        importingDocument = true
+        busy = "Importing…"
         Task {
             let note = await library.importDocument(from: url, subject: currentSubject)
-            importingDocument = false
+            busy = nil
             if let note { open(note) }
+        }
+    }
+
+    /// Swaps the note on screen in place, so moving between tabs doesn't animate the editor away and back.
+    private func switchTo(_ id: UUID, from current: EditorModel) {
+        guard id != current.note.id, let target = library.notes.first(where: { $0.id == id }) else { return }
+        current.close()
+        if target.locked {
+            editor = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { open(target) }
+        } else {
+            open(target)
+        }
+    }
+
+    private func fileAutomatically(_ note: Note) {
+        let names = library.subjects.map(\.name)
+        guard !names.isEmpty else { return }
+        busy = "Choosing a folder…"
+        Task {
+            defer { busy = nil }
+            do {
+                let body = note.searchText + "\n" + note.elements.map(\.text).joined(separator: "\n")
+                let name = try await AI.folder(for: "\(note.title)\n\(body)", among: names)
+                guard let folder = library.subjects.first(where: { $0.name == name }) else { return }
+                library.move(note.id, to: folder.id)
+                busy = "Moved to \(library.path(of: folder))"
+                try? await Task.sleep(for: .seconds(1.5))
+            } catch {
+                library.lastError = error.localizedDescription
+            }
         }
     }
 
@@ -152,6 +183,7 @@ struct LibraryView: View {
     /// Face ID is a privacy lock for the screen; files aren't separately encrypted beyond iOS's own data protection.
     private func open(_ note: Note) {
         guard library.beginEditing(note.id) else { return }
+        library.addTab(note.id)
         UserDefaults.standard.set(note.id.uuidString, forKey: Self.lastNoteKey)
         guard note.locked else {
             let model = EditorModel(note: note, library: library)
@@ -201,23 +233,7 @@ struct LibraryView: View {
             }
             .tag(Shelf.study)
             Section("Folders") {
-                ForEach(library.subjects) { subject in
-                    Label {
-                        Text(subject.name)
-                    } icon: {
-                        Circle().fill(Color(uiColor: UIColor(hex: subject.colorHex))).frame(width: 12, height: 12)
-                    }
-                    .tag(Shelf.subject(subject.id))
-                    .contextMenu {
-                        Button("Rename", systemImage: "pencil") {
-                            ask("Rename Folder", initial: subject.name) { if !$0.isEmpty { library.renameSubject(subject.id, to: $0) } }
-                        }
-                        Button("Delete Folder", systemImage: "trash", role: .destructive) {
-                            if shelf == .subject(subject.id) { shelf = .all }
-                            library.deleteSubject(subject.id)
-                        }
-                    }
-                }
+                folderRows(in: nil)
                 Button("New Folder", systemImage: "plus") {
                     ask("New Folder") { if !$0.isEmpty { library.addSubject(name: $0) } }
                 }
@@ -238,6 +254,41 @@ struct LibraryView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button("Settings", systemImage: "gearshape") { showSettings = true }
+            }
+        }
+    }
+
+    private func folderRows(in parent: UUID?) -> AnyView {
+        AnyView(ForEach(library.subfolders(of: parent)) { subject in
+            if library.subfolders(of: subject.id).isEmpty {
+                folderRow(subject)
+            } else {
+                DisclosureGroup {
+                    folderRows(in: subject.id)
+                } label: {
+                    folderRow(subject)
+                }
+            }
+        })
+    }
+
+    private func folderRow(_ subject: Subject) -> some View {
+        Label {
+            Text(subject.name)
+        } icon: {
+            Circle().fill(Color(uiColor: UIColor(hex: subject.colorHex))).frame(width: 12, height: 12)
+        }
+        .tag(Shelf.subject(subject.id))
+        .contextMenu {
+            Button("New Subfolder", systemImage: "folder.badge.plus") {
+                ask("New Subfolder") { if !$0.isEmpty { library.addSubject(name: $0, parent: subject.id) } }
+            }
+            Button("Rename", systemImage: "pencil") {
+                ask("Rename Folder", initial: subject.name) { if !$0.isEmpty { library.renameSubject(subject.id, to: $0) } }
+            }
+            Button("Delete Folder", systemImage: "trash", role: .destructive) {
+                if shelf == .subject(subject.id) { shelf = .all }
+                library.deleteSubject(subject.id)
             }
         }
     }
@@ -263,13 +314,15 @@ struct LibraryView: View {
                 }
             } else {
                 ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170, maximum: 230), spacing: 22)], spacing: 26) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170, maximum: 230), spacing: 22, alignment: .top)], spacing: 26) {
                         ForEach(notes) { note in
-                            NoteCard(note: note, library: library)
-                                .onTapGesture {
-                                    if note.deletedAt == nil { open(note) }
-                                }
-                                .contextMenu { menu(for: note) }
+                            Button {
+                                if note.deletedAt == nil { open(note) }
+                            } label: {
+                                NoteCard(note: note, library: library)
+                            }
+                            .buttonStyle(CardPress())
+                            .contextMenu { menu(for: note) }
                         }
                     }
                     .padding(24)
@@ -336,8 +389,11 @@ struct LibraryView: View {
             Menu("Move to", systemImage: "folder") {
                 Button("Unfiled") { library.move(note.id, to: nil) }
                 ForEach(library.subjects) { subject in
-                    Button(subject.name) { library.move(note.id, to: subject.id) }
+                    Button(library.path(of: subject)) { library.move(note.id, to: subject.id) }
                 }
+            }
+            if AI.isAvailable, !library.subjects.isEmpty, !note.locked {
+                Button("File Automatically", systemImage: "sparkles") { fileAutomatically(note) }
             }
             Button(note.locked ? "Remove Lock" : "Lock with Face ID", systemImage: note.locked ? "lock.open" : "lock") {
                 setLock(note)
@@ -401,6 +457,15 @@ struct ICloudBanner: View {
     }
 }
 
+/// The card gives way slightly under a finger, like pressing on paper.
+private struct CardPress: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
 struct NoteCard: View {
     let note: Note
     let library: Library
@@ -431,7 +496,7 @@ struct NoteCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(note.title).font(.subheadline.weight(.semibold)).lineLimit(2)
                     HStack(spacing: 6) {
-                        Text(note.updatedAt.formatted(date: .abbreviated, time: .omitted))
+                        Text(note.updatedAt.formatted(date: .abbreviated, time: .omitted) + (note.pages.count > 1 ? " · \(note.pages.count) pages" : ""))
                         if note.favorite { Image(systemName: "star.fill").foregroundStyle(.yellow).accessibilityLabel("Favorite") }
                         if !note.recordings.isEmpty { Image(systemName: "waveform").accessibilityLabel("Has audio") }
                         if note.locked { Image(systemName: "lock.fill").accessibilityLabel("Locked") }
@@ -444,7 +509,6 @@ struct NoteCard: View {
         }
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
-        .accessibilityAddTraits(.isButton)
     }
 }
 

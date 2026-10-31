@@ -8,6 +8,7 @@ import UIKit
 final class Library {
     private(set) var notes: [Note] = []
     private(set) var subjects: [Subject] = []
+    private(set) var tabs: [UUID] = (UserDefaults.standard.stringArray(forKey: "openTabs") ?? []).compactMap(UUID.init)
     var lastError: String?
     var syncStatus: String?
 
@@ -50,12 +51,27 @@ final class Library {
 
     func endEditing(_ id: UUID) { editing.remove(id) }
 
+    func addTab(_ id: UUID) {
+        guard !tabs.contains(id) else { return }
+        tabs.append(id)
+        saveTabs()
+    }
+
+    func closeTab(_ id: UUID) {
+        tabs.removeAll { $0 == id }
+        saveTabs()
+    }
+
+    private func saveTabs() {
+        UserDefaults.standard.set(tabs.map(\.uuidString), forKey: "openTabs")
+    }
+
     static func positionKey(_ id: UUID) -> String { "position-\(id.uuidString)" }
 
     nonisolated func dir(_ id: UUID) -> URL { notesDir.appendingPathComponent(id.uuidString, isDirectory: true) }
     func drawingURL(_ id: UUID) -> URL { dir(id).appendingPathComponent("drawing.data") }
     func thumbURL(_ id: UUID) -> URL { dir(id).appendingPathComponent("thumb.jpg") }
-    func pdfURL(_ id: UUID) -> URL { dir(id).appendingPathComponent("source.pdf") }
+    nonisolated func pdfURL(_ id: UUID) -> URL { dir(id).appendingPathComponent("source.pdf") }
 
     func loadDrawing(_ id: UUID) -> PKDrawing {
         guard let data = try? Data(contentsOf: drawingURL(id)) else { return PKDrawing() }
@@ -74,7 +90,7 @@ final class Library {
 
     // MARK: Notes
 
-    func save(_ note: Note, ink: PKDrawing? = nil, failed: (@MainActor (String) -> Void)? = nil) {
+    func save(_ note: Note, ink: PKDrawing? = nil, failed: (@MainActor @Sendable (String) -> Void)? = nil) {
         var note = note
         note.updatedAt = Date()
         // The search index is written behind the editor's back, so its copy may be out of date.
@@ -82,7 +98,7 @@ final class Library {
         store(note, ink: ink, failed: failed)
     }
 
-    private func store(_ note: Note, ink: PKDrawing? = nil, failed: (@MainActor (String) -> Void)? = nil) {
+    private func store(_ note: Note, ink: PKDrawing? = nil, failed: (@MainActor @Sendable (String) -> Void)? = nil) {
         let folder = dir(note.id), inkFile = drawingURL(note.id)
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -169,31 +185,29 @@ final class Library {
     /// One reader per note at a time; reading a scanned book takes minutes.
     func beginIndexing(_ id: UUID) -> Bool { indexing.insert(id).inserted }
 
-    /// What's printed on a note's scanned pages, by PDF page. Reading one takes about a second, so results are kept with the note.
-    nonisolated func scannedText(of note: Note, in doc: PDFDocument?, pdfPages wanted: Set<Int>? = nil) -> [Int: String] {
-        guard let doc else { return [:] }
-        let folder = dir(note.id), file = folder.appendingPathComponent("scan-text.json")
+    /// The text of each PDF page, by its place in the PDF. A scanned page is read with OCR, which takes about a second,
+    /// and even printed text is slow across a whole book, so results are kept with the note.
+    nonisolated func pdfPageText(of note: Note) -> [Int: String] {
+        guard let doc = PDFDocument(url: pdfURL(note.id)) else { return [:] }
+        let folder = dir(note.id), file = folder.appendingPathComponent("page-text.json")
         var known = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder().decode([Int: String].self, from: $0) } ?? [:]
         let rects = Renderer.rects(for: note)
         var unsaved = 0
         for (i, page) in note.pages.enumerated() {
-            guard let index = page.pdfPage, wanted?.contains(index) ?? true, known[index] == nil else { continue }
-            autoreleasepool {
-                guard (doc.page(at: index)?.string ?? "").isEmpty else { return }
-                known[index] = Renderer.recognize(Renderer.snapshot(note: note, drawing: PKDrawing(), rect: rects[i], dir: folder))
-                unsaved += 1
+            guard let index = page.pdfPage, known[index] == nil else { continue }
+            known[index] = autoreleasepool {
+                let printed = doc.page(at: index)?.string ?? ""
+                guard printed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return printed }
+                return Renderer.recognize(Renderer.snapshot(note: note, drawing: PKDrawing(), rect: rects[i], dir: folder))
             }
-            if unsaved >= 10 {
+            unsaved += 1
+            if unsaved >= 25 {
                 try? JSONEncoder().encode(known).write(to: file, options: .atomic)
                 unsaved = 0
             }
         }
         if unsaved > 0 { try? JSONEncoder().encode(known).write(to: file, options: .atomic) }
         return known
-    }
-
-    nonisolated func pdfText(_ doc: PDFDocument) -> String {
-        (0..<doc.pageCount).compactMap { doc.page(at: $0)?.string }.joined(separator: "\n")
     }
 
     func setSearchText(_ text: String, for id: UUID) {
@@ -248,6 +262,20 @@ final class Library {
     }
 
     var signatureURL: URL { root.appendingPathComponent("signature.png") }
+
+    // MARK: Stickers
+
+    private var stickersDir: URL { root.appendingPathComponent("Stickers", isDirectory: true) }
+
+    var stickers: [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: stickersDir, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "png" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    func saveSticker(_ png: Data) throws {
+        try FileManager.default.createDirectory(at: stickersDir, withIntermediateDirectories: true)
+        try png.write(to: stickersDir.appendingPathComponent("\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString).png"), options: .atomic)
+    }
 
     /// A document of any supported type becomes a new note made of its pages.
     func importDocument(from url: URL, subject: UUID?) async -> Note? {
@@ -407,10 +435,25 @@ final class Library {
 
     // MARK: Subjects
 
-    func addSubject(name: String) {
+    func addSubject(name: String, parent: UUID? = nil) {
         let palette = ["E5484D", "F76B15", "FFB224", "30A46C", "0091FF", "6E56CF", "D6409F"]
-        subjects.append(Subject(name: name, colorHex: palette[subjects.count % palette.count]))
+        subjects.append(Subject(name: name, colorHex: palette[subjects.count % palette.count], parentID: parent))
         saveSubjects()
+    }
+
+    /// A folder whose parent was deleted on another device shows at the top level rather than disappearing.
+    func subfolders(of parent: UUID?) -> [Subject] {
+        let known = Set(subjects.map(\.id))
+        return subjects.filter { $0.parentID.flatMap { known.contains($0) ? $0 : nil } == parent }
+    }
+
+    func path(of subject: Subject) -> String {
+        var names = [subject.name], current = subject, seen: Set<UUID> = [subject.id]
+        while let parent = subjects.first(where: { $0.id == current.parentID }), seen.insert(parent.id).inserted {
+            names.insert(parent.name, at: 0)
+            current = parent
+        }
+        return names.joined(separator: " › ")
     }
 
     func renameSubject(_ id: UUID, to name: String) {
@@ -420,9 +463,11 @@ final class Library {
     }
 
     func deleteSubject(_ id: UUID) {
+        let parent = subjects.first { $0.id == id }?.parentID
         subjects.removeAll { $0.id == id }
+        for i in subjects.indices where subjects[i].parentID == id { subjects[i].parentID = parent }
         saveSubjects()
-        for note in notes where note.subjectID == id { move(note.id, to: nil) }
+        for note in notes where note.subjectID == id { move(note.id, to: parent) }
     }
 
     private func saveSubjects() {

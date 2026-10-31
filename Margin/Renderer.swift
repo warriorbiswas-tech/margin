@@ -1,3 +1,4 @@
+import CoreImage
 import PencilKit
 import UIKit
 import Vision
@@ -144,11 +145,16 @@ enum Renderer {
     /// PencilKit resolves ink for the current trait, so pin light to keep the colours the user picked.
     static func inkImage(_ drawing: PKDrawing, rect: CGRect, scale: CGFloat) -> UIImage {
         var image = UIImage()
+        guard rect.width > 0, rect.height > 0, rect.width.isFinite, rect.height.isFinite else { return image }
+        // PencilKit draws through a Metal texture, and asking for one over the size limit aborts the app.
+        let fitted = min(scale, maxInkTexture / max(rect.width, rect.height))
         UITraitCollection(userInterfaceStyle: .light).performAsCurrent {
-            image = drawing.image(from: rect, scale: scale)
+            image = drawing.image(from: rect, scale: fitted)
         }
         return image
     }
+
+    private static let maxInkTexture: CGFloat = 8192
 
     static func rects(for note: Note) -> [CGRect] {
         let heights = note.pages.map(\.height)
@@ -368,15 +374,33 @@ enum Renderer {
         return []
     }
 
+    enum CutoutError: LocalizedError {
+        case noSubject
+        var errorDescription: String? { "Margin couldn't find a clear subject in that image." }
+    }
+
+    /// Lifts the subject off its background with Vision, as a PNG the size of the original.
+    static func subjectCutout(of url: URL) throws -> Data {
+        guard let source = UIImage(contentsOfFile: url.path)?.cgImage else { throw CutoutError.noSubject }
+        let handler = VNImageRequestHandler(cgImage: source)
+        let request = VNGenerateForegroundInstanceMaskRequest()
+        guard (try? handler.perform([request])) != nil, let result = request.results?.first,
+              let buffer = try? result.generateMaskedImage(ofInstances: result.allInstances, from: handler, croppedToInstancesExtent: false) else { throw CutoutError.noSubject }
+        let output = CIImage(cvPixelBuffer: buffer)
+        guard let cut = CIContext().createCGImage(output, from: output.extent), let png = UIImage(cgImage: cut).pngData() else { throw CutoutError.noSubject }
+        return png
+    }
+
     static func recognize(_ image: UIImage) -> String {
         recognizeLines(image).map(\.text).joined(separator: "\n")
     }
 
     static func recognizeInk(_ drawing: PKDrawing, rect: CGRect) -> String {
         guard drawing.strokes.contains(where: { $0.renderBounds.intersects(rect) }) else { return "" }
-        let ink = inkImage(drawing, rect: rect, scale: 2)
+        let scale = min(2, maxInkTexture / max(rect.width, rect.height))
+        let ink = inkImage(drawing, rect: rect, scale: scale)
         let format = UIGraphicsImageRendererFormat()
-        format.scale = 2
+        format.scale = scale
         let image = UIGraphicsImageRenderer(size: rect.size, format: format).image { ctx in
             UIColor.white.setFill()
             ctx.fill(CGRect(origin: .zero, size: rect.size))

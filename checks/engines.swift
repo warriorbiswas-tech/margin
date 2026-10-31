@@ -66,6 +66,20 @@ await attempt("same long question again, reusing what the model already read") {
     let warm = Date().timeIntervalSince(second)
     return String(format: "first %.2fs, again %.2fs", cold, warm)
 }
+for mode in AskMode.allCases {
+    await attempt(mode.rawValue) {
+        let text = mode == .steps ? "A train travels 120 km in 2 hours. What is its average speed?" : notes
+        return try await AI.ask(mode, about: text)
+    }
+}
+await attempt("teach back") {
+    try await AI.reviewExplanation("Mitosis makes two identical cells. Meiosis makes two cells too.", against: notes)
+}
+await attempt("file into a folder") {
+    let chosen = try await AI.folder(for: notes, among: ["Biology", "History", "Work \\ Admin", "Say \"Hi\""])
+    guard chosen == "Biology" else { throw AIError.badResponse }
+    return chosen
+}
 await attempt("not in notes") {
     let system = AI.chatSystem(context: notes)
     return try await AI.complete(system: system, messages: [("user", "Who won the 2018 World Cup according to my notes?")])
@@ -104,7 +118,7 @@ await attempt("cancel mid-answer") {
 await attempt("works after cancel") { try await AI.complete(system: "Reply with one word.", prompt: "What color is the sky?", maxTokens: 40) }
 LocalLLM.shared.unload()
 await attempt("reload after unload") { try await AI.complete(system: "Reply with one word.", prompt: "What is 2+2?", maxTokens: 40) }
-LocalLLM.shared.unload()
+await withCheckedContinuation { finished in LocalLLM.shared.unload { finished.resume() } }
 
 print(failures == 0 ? "ALL PASSED" : "\(failures) FAILED")
 exit(failures == 0 ? 0 : 1)

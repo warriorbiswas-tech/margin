@@ -57,6 +57,7 @@ struct Page: Codable, Identifiable, Hashable {
     var pdfPage: Int? // index into source.pdf; nil for plain paper
     var backgroundFile: String? // custom template image in the note's folder
     var bookmarked = false
+    var endless: Bool? // grows as you write instead of turning over to a new page
 }
 
 struct Element: Codable, Identifiable, Hashable {
@@ -132,6 +133,7 @@ struct Subject: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
     var colorHex: String
+    var parentID: UUID?
 }
 
 struct Note: Codable, Identifiable, Hashable {

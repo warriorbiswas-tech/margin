@@ -244,6 +244,7 @@ struct NewNoteSheet: View {
     @State private var choosingDesign = false
     @State private var addingFolder = false
     @State private var folderName = ""
+    @State private var endless = false
 
     var body: some View {
         NavigationStack {
@@ -254,7 +255,7 @@ struct NewNoteSheet: View {
                 Section("Folder") {
                     Picker("Folder", selection: $folder) {
                         Text("Unfiled").tag(UUID?.none)
-                        ForEach(library.subjects) { Text($0.name).tag(UUID?.some($0.id)) }
+                        ForEach(library.subjects) { Text(library.path(of: $0)).tag(UUID?.some($0.id)) }
                     }
                     Button("New Folder", systemImage: "folder.badge.plus") {
                         folderName = ""
@@ -275,7 +276,7 @@ struct NewNoteSheet: View {
                         }
                     }
                 }
-                Section("Notebook Design") {
+                Section {
                     Button {
                         choosingDesign = true
                     } label: {
@@ -298,6 +299,11 @@ struct NewNoteSheet: View {
                     Picker("Page Size", selection: $size) {
                         ForEach(PageSize.allCases) { Text($0.title).tag($0) }
                     }
+                    Toggle("Endless Page", isOn: $endless)
+                } header: {
+                    Text("Notebook Design")
+                } footer: {
+                    if endless { Text("One long page that grows as you write, for brainstorms and sketches.") }
                 }
                 if !library.templates.isEmpty {
                     Section("My Templates") {
@@ -337,7 +343,7 @@ struct NewNoteSheet: View {
     }
 
     private func create() {
-        let page = Page(height: size.height, style: style, color: color)
+        let page = Page(height: size.height, style: style, color: color, endless: endless ? true : nil)
         let title = name.trimmingCharacters(in: .whitespaces)
         let note = library.createNote(subject: folder, title: title.isEmpty ? nil : title, page: page)
         dismiss()
