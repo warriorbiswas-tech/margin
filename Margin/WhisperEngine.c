@@ -32,6 +32,7 @@ int32_t margin_whisper_transcribe(margin_whisper *whisper,
                                   const float *samples,
                                   int32_t sample_count,
                                   int32_t threads,
+                                  const char *language,
                                   margin_segment_callback callback,
                                   void *user) {
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
@@ -39,7 +40,7 @@ int32_t margin_whisper_transcribe(margin_whisper *whisper,
     params.print_realtime = false;
     params.print_timestamps = false;
     params.print_special = false;
-    params.language = "en";
+    params.language = language;
     params.n_threads = threads;
 
     int32_t status = whisper_full(whisper->context, params, samples, sample_count);
@@ -60,7 +61,7 @@ bool margin_whisper_supported(void) { return false; }
 margin_whisper *margin_whisper_open(const char *model_path) { return 0; }
 void margin_whisper_close(margin_whisper *whisper) {}
 int32_t margin_whisper_transcribe(margin_whisper *whisper, const float *samples, int32_t sample_count, int32_t threads,
-                                  margin_segment_callback callback, void *user) {
+                                  const char *language, margin_segment_callback callback, void *user) {
     return margin_error_prompt;
 }
 

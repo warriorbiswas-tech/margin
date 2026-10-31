@@ -27,6 +27,14 @@ await attempt("transcribe file") {
     let lines = try await Transcriber.transcribe(file: URL(fileURLWithPath: arguments[2])) { _ in }
     return lines.map { "\(String(format: "%.1f", $0.time)) \($0.text)" }.joined(separator: "\n")
 }
+await attempt("transcribe, other languages model") {
+    guard ModelFile.speechWorld.isInstalled else { return "skipped: model not in the folder" }
+    UserDefaults.standard.set("auto", forKey: SpeechLanguage.key)
+    defer { UserDefaults.standard.removeObject(forKey: SpeechLanguage.key) }
+    let lines = try await Transcriber.transcribe(file: URL(fileURLWithPath: arguments[2])) { _ in }
+    guard !lines.isEmpty else { throw AIError.badResponse }
+    return lines.map(\.text).joined(separator: " ")
+}
 await attempt("summary") { try await AI.summary(of: notes) }
 await attempt("streaming") {
     let box = Counter()
@@ -71,6 +79,9 @@ for mode in AskMode.allCases {
         let text = mode == .steps ? "A train travels 120 km in 2 hours. What is its average speed?" : notes
         return try await AI.ask(mode, about: text)
     }
+}
+await attempt("clean up a transcript") {
+    try await AI.cleanTranscript("today we are covering my toe sis in meta phase the chromosomes line up along the equator of the cell then in ana phase they are pulled apart")
 }
 await attempt("teach back") {
     try await AI.reviewExplanation("Mitosis makes two identical cells. Meiosis makes two cells too.", against: notes)

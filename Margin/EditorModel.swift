@@ -3,6 +3,7 @@ import Observation
 import PDFKit
 import PencilKit
 import UIKit
+import WebKit
 
 enum Tool: String, CaseIterable, Identifiable {
     case pen, highlighter, eraser, lasso, text, region, annotate, tape, laser
@@ -82,6 +83,7 @@ final class InkCanvas: PKCanvasView {
 
 /// Everything one undo step puts back.
 struct NoteState: Equatable {
+    var boardWidth: CGFloat?
     var pages: [Page]
     var elements: [Element]
     var excerpts: [Excerpt]
@@ -94,7 +96,13 @@ final class TiledView: UIView {
         override class func fadeDuration() -> CFTimeInterval { 0 }
     }
     override class var layerClass: AnyClass { FastLayer.self }
-    var painter: ((CGContext) -> Void)?
+    private let painterLock = NSLock()
+    private var currentPainter: ((CGContext) -> Void)?
+    /// Replaced on the main thread while tiles draw on others, when a page changes or an endless page grows.
+    var painter: ((CGContext) -> Void)? {
+        get { painterLock.withLock { currentPainter } }
+        set { painterLock.withLock { currentPainter = newValue } }
+    }
     var contentKey: AnyHashable?
 
     override init(frame: CGRect) {
@@ -184,7 +192,6 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             applyDrawingPolicy()
             if liveText {
                 liveSince = max(Date(), canvas.drawing.strokes.map(\.path.creationDate).max() ?? .distantPast)
-                liveTailID = nil
                 scheduleLiveText()
             } else {
                 liveTask?.cancel()
@@ -206,13 +213,14 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     var scribbleUnavailable = false
 
     /// Scribble reads the pen's motion, which is far more accurate than reading a picture of the ink, but it only works with a Pencil.
-    var scribbleActive: Bool { liveText && tool == .pen && !fingerDrawing && !scribbleUnavailable && playing == nil }
+    var scribbleActive: Bool { liveText && tool == .pen && !fingerDrawing && !scribbleUnavailable && playing == nil && !readOnly }
     var aiProgress: String?
     var aiAnswer: AIAnswer?
     @ObservationIgnored var askTask: Task<Void, Never>?
     @ObservationIgnored var liveSince = Date()
     @ObservationIgnored var liveTask: Task<Void, Never>?
-    @ObservationIgnored var liveTailID: UUID?
+    @ObservationIgnored var liveInk: CGRect?
+    @ObservationIgnored var lastLiveTouch = Date.distantPast
     @ObservationIgnored var penDown = false
     var zoomPercent = 100
     var currentPage = 1
@@ -252,7 +260,27 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     var textSize: CGFloat = 20
     var textFont = "sans"
     var textBold = false
+    var textItalic = false
+    var textUnderline = false
+    var textAlign: String?
+    var readOnly = false {
+        didSet {
+            overlay.commitEditing()
+            selectedElementID = nil
+            regionRect = nil
+            applyTool()
+            applyDrawingPolicy()
+        }
+    }
     var showWeb = false
+    var webFloating = false
+    /// One web view for the note, so a video keeps playing when its window moves between docked and floating.
+    @ObservationIgnored lazy var web: WKWebView = {
+        let configuration = WKWebViewConfiguration()
+        configuration.allowsInlineMediaPlayback = true
+        configuration.allowsPictureInPictureMediaPlayback = true
+        return WKWebView(frame: .zero, configuration: configuration)
+    }()
     var openNoteRequest: UUID?
     var zoomOn = false { didSet { zoomDidToggle() } }
     @ObservationIgnored let zoomCanvas = InkCanvas()
@@ -329,6 +357,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         trail.onTouch = { [weak self] touch, began in
             if began { self?.lastTouchType = touch.type }
             self?.eraserTouch(touch, began: began)
+            self?.liveTouch(touch, began: began)
         }
         canvas.addGestureRecognizer(trail)
         overlay.addInteraction(UIIndirectScribbleInteraction(delegate: liveScribble))
@@ -362,10 +391,14 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         var factor = lastWidth > 0 ? canvas.zoomScale / (lastWidth / NoteLayout.width) : 1
         if lastWidth == 0, let saved = UserDefaults.standard.array(forKey: positionKey) as? [Double], saved.count == 3 {
             (left, top, factor) = (saved[0], saved[1], saved[2])
+        } else if lastWidth == 0, let board = note.boardWidth {
+            // A whiteboard opens in its middle, with room to write in every direction.
+            left = (board - NoteLayout.width) / 2
+            top = (NoteLayout.totalHeight(note.pages.map(\.height)) - NoteLayout.paperHeight) / 2
         }
         lastWidth = size.width
         let fit = size.width / NoteLayout.width
-        canvas.minimumZoomScale = fit * 0.4
+        canvas.minimumZoomScale = fit * (note.boardWidth == nil ? 0.4 : 0.17)
         canvas.maximumZoomScale = fit * 6
         canvas.zoomScale = fit * factor
         updateForZoom()
@@ -391,13 +424,13 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     private func updateForZoom() {
         let z = canvas.zoomScale
         let total = NoteLayout.totalHeight(note.pages.map(\.height))
-        canvas.contentSize = CGSize(width: NoteLayout.width * z, height: total * z)
+        canvas.contentSize = CGSize(width: note.width * z, height: total * z)
         // Zoomed out, the page is narrower than the screen, so keep it centered.
-        let side = max((canvas.bounds.width - NoteLayout.width * z) / 2, 0)
+        let side = max((canvas.bounds.width - note.width * z) / 2, 0)
         canvas.contentInset = UIEdgeInsets(top: 0, left: side, bottom: 0, right: side)
         if lastWidth > 0 { zoomPercent = Int((z / (lastWidth / NoteLayout.width) * 100).rounded()) }
         for view in [underlay, overlay] as [UIView] {
-            view.bounds = CGRect(x: 0, y: 0, width: NoteLayout.width, height: total)
+            view.bounds = CGRect(x: 0, y: 0, width: note.width, height: total)
             view.transform = CGAffineTransform(scaleX: z, y: z)
         }
         overlay.refreshSelection()
@@ -456,8 +489,8 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
                 pageViews[page.id] = v
                 return v
             }()
-            view.frame = CGRect(x: 0, y: y, width: NoteLayout.width, height: page.height)
-            let key = AnyHashable([AnyHashable(page), AnyHashable(darkPages)])
+            view.frame = CGRect(x: 0, y: y, width: note.width, height: page.height)
+            let key = AnyHashable([AnyHashable(page), AnyHashable(darkPages), AnyHashable(note.width)])
             if view.contentKey != key {
                 let size = view.bounds.size, doc = pdf, dark = darkPages
                 let background = page.backgroundFile.flatMap { UIImage(contentsOfFile: library.dir(note.id).appendingPathComponent($0).path) }
@@ -527,10 +560,10 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     // MARK: Tools
 
     private func applyTool() {
-        let inking = [.pen, .highlighter, .eraser, .lasso].contains(tool) && playing == nil && !scribbleActive
+        let inking = [.pen, .highlighter, .eraser, .lasso].contains(tool) && playing == nil && !scribbleActive && !readOnly
         canvas.drawingGestureRecognizer.isEnabled = inking
         zoomCanvas.drawingGestureRecognizer.isEnabled = inking
-        overlay.isUserInteractionEnabled = !inking
+        overlay.isUserInteractionEnabled = !inking && !readOnly
         // A Pencil only scrolls with a tool that doesn't write. Otherwise a quick stroke could move the page instead.
         canvas.panGestureRecognizer.allowedTouchTypes = inking || scribbleActive
             ? [UITouch.TouchType.direct.rawValue as NSNumber, UITouch.TouchType.indirectPointer.rawValue as NSNumber]
@@ -557,7 +590,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     private func applyDrawingPolicy() {
-        canvas.drawingPolicy = fingerDrawing ? .anyInput : .pencilOnly
+        canvas.drawingPolicy = fingerDrawing && !readOnly ? .anyInput : .pencilOnly
         zoomCanvas.drawingPolicy = canvas.drawingPolicy
     }
 
@@ -574,7 +607,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     @objc private func fingerTapped(_ g: UITapGestureRecognizer) {
         // With finger drawing on, a tap is ink, not a click.
-        guard !fingerDrawing, playing == nil else { return }
+        guard !fingerDrawing || readOnly, playing == nil else { return }
         let p = g.location(in: canvas)
         let z = canvas.zoomScale
         let point = CGPoint(x: p.x / z, y: p.y / z)
@@ -586,14 +619,14 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     func undo() {
-        guard playing == nil else { return }
+        guard playing == nil, !readOnly else { return }
         overlay.commitEditing()
         guard let state = history.undo(from: currentState) else { return }
         restore(state)
     }
 
     func redo() {
-        guard playing == nil else { return }
+        guard playing == nil, !readOnly else { return }
         overlay.commitEditing()
         guard let state = history.redo(from: currentState) else { return }
         restore(state)
@@ -601,11 +634,12 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     private var currentState: NoteState {
         // A box with nothing written in it yet doesn't show, so undoing to it would look like nothing happened.
-        NoteState(pages: note.pages, elements: note.elements.filter { !$0.isBlank }, excerpts: note.excerpts, drawing: currentDrawing)
+        NoteState(boardWidth: note.boardWidth, pages: note.pages, elements: note.elements.filter { !$0.isBlank }, excerpts: note.excerpts, drawing: currentDrawing)
     }
 
     private func restore(_ state: NoteState) {
-        let pagesChanged = state.pages != note.pages
+        let pagesChanged = state.pages != note.pages || state.boardWidth != note.boardWidth
+        note.boardWidth = state.boardWidth
         note.pages = state.pages
         note.elements = state.elements
         note.excerpts = state.excerpts
@@ -655,13 +689,13 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         overlay.beginEditing(el)
     }
     @objc private func tapUndo() {
-        guard playing == nil else { return }
+        guard playing == nil, !readOnly else { return }
         notify(canUndo ? "Undo" : "Nothing to Undo")
         undo()
     }
 
     @objc private func tapRedo() {
-        guard playing == nil else { return }
+        guard playing == nil, !readOnly else { return }
         notify(canRedo ? "Redo" : "Nothing to Redo")
         redo()
     }
@@ -765,6 +799,10 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     private func appendPageIfNeeded(after bounds: CGRect) {
+        if let board = note.boardWidth, bounds.maxX > board - NoteLayout.width {
+            note.boardWidth = board + NoteLayout.width
+            rebuildPages()
+        }
         guard let last = note.pages.last, last.pdfPage == nil, let origin = NoteLayout.origins(note.pages.map(\.height)).last else { return }
         if last.endless == true {
             guard bounds.maxY > origin + last.height - NoteLayout.paperHeight / 2 else { return }
@@ -861,8 +899,11 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     func addTextBox(at point: CGPoint) -> Element {
         checkpoint()
-        let width = min(380, NoteLayout.width - point.x - 12)
-        var el = Element(rect: CGRect(x: max(min(point.x, NoteLayout.width - 120), 0), y: point.y, width: max(width, 108), height: 30), fontSize: textSize, colorHex: textColor.hex, fontName: textFont, bold: textBold)
+        let width = min(380, note.width - point.x - 12)
+        var el = Element(rect: CGRect(x: max(min(point.x, note.width - 120), 0), y: point.y, width: max(width, 108), height: 30), fontSize: textSize, colorHex: textColor.hex, fontName: textFont, bold: textBold)
+        el.italic = textItalic
+        el.underline = textUnderline
+        el.align = textAlign
         el.rect.size.height = Renderer.textHeight(el)
         note.elements.append(el)
         syncElements()
@@ -922,13 +963,17 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     func applyTextStyle() {
         guard let id = selectedElementID, let current = note.elements.first(where: { $0.id == id }), current.imageFile == nil,
-              current.fontSize != textSize || current.colorHex != textColor.hex || current.fontName != textFont || current.bold != textBold else { return }
+              current.fontSize != textSize || current.colorHex != textColor.hex || current.fontName != textFont || current.bold != textBold
+                || current.italic != textItalic || current.underline != textUnderline || current.align != textAlign else { return }
         checkpoint()
         updateElement(id) { el in
             el.fontSize = textSize
             el.colorHex = textColor.hex
             el.fontName = textFont
             el.bold = textBold
+            el.italic = textItalic
+            el.underline = textUnderline
+            el.align = textAlign
             el.rect.size.height = Renderer.textHeight(el)
         }
         overlay.styleDidChange()
@@ -970,8 +1015,20 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     private func writeThumbnail() {
         thumbnailStale = false
-        guard let first = note.pages.first, let image = thumbnail(first, width: 360) else { return }
+        guard let first = note.pages.first, let image = coverPicture(first) else { return }
         try? image.jpegData(compressionQuality: 0.7)?.write(to: library.thumbURL(note.id), options: .atomic)
+    }
+
+    /// A whiteboard or endless page is mostly empty, so its picture shows the part that has something on it.
+    private func coverPicture(_ first: Page) -> UIImage? {
+        guard first.endless == true, let page = Renderer.rects(for: note).first else { return thumbnail(first, width: 360) }
+        let ink = currentDrawing.strokes.map(\.renderBounds).filter { $0.intersects(page) }
+        let boxes = note.elements.map(\.rect).filter { $0.intersects(page) }
+        let content = (ink + boxes).reduce(CGRect.null) { $0.union($1) }
+        guard !content.isNull else { return thumbnail(first, width: 360) }
+        let width = min(max(content.width + 80, NoteLayout.width), page.width), height = min(width * 11 / 8.5, page.height)
+        let area = CGRect(x: min(max(content.minX - 40, 0), page.maxX - width), y: min(max(content.minY - 40, 0), page.maxY - height), width: width, height: height)
+        return Renderer.snapshot(note: note, drawing: currentDrawing, rect: area, dir: library.dir(note.id), scale: 360 / width)
     }
 
     func rename(_ title: String) {

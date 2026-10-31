@@ -45,6 +45,7 @@ int32_t margin_whisper_transcribe(margin_whisper *whisper,
                                   const float *samples,
                                   int32_t sample_count,
                                   int32_t threads,
+                                  const char *language,
                                   margin_segment_callback callback,
                                   void *user);
 

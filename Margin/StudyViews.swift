@@ -1,12 +1,14 @@
+import PhotosUI
 import SwiftUI
 
 enum StudyError: LocalizedError {
-    case emptyNote, emptySelection, noTranscript, emptyExplanation
+    case emptyNote, emptySelection, noTranscript, emptyExplanation, emptyQuestion
     var errorDescription: String? {
         switch self {
         case .emptyNote: "There's nothing in this note to work from yet."
         case .emptySelection: "No text could be read in that area. Try selecting printed text or clearer handwriting."
         case .emptyExplanation: "Write your explanation first."
+        case .emptyQuestion: "Type a question or choose a photo of one first."
         case .noTranscript: "This needs a recording with a transcript. Record the talk, or transcribe a recording from the playback bar."
         }
     }
@@ -100,7 +102,7 @@ struct AssistantSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     enum Tab: String, CaseIterable, Identifiable {
-        case chat = "Chat", summary = "Summary", cards = "Flashcards", quiz = "Quiz", map = "Mind Map", teach = "Teach Back", finish = "Finish Notes"
+        case chat = "Chat", summary = "Summary", cards = "Flashcards", quiz = "Quiz", map = "Mind Map", teach = "Teach Back", homework = "Homework", finish = "Finish Notes"
         var id: String { rawValue }
         var icon: String {
             switch self {
@@ -110,6 +112,7 @@ struct AssistantSheet: View {
             case .quiz: "checklist"
             case .map: "point.3.connected.trianglepath.dotted"
             case .teach: "person.wave.2"
+            case .homework: "camera.viewfinder"
             case .finish: "text.badge.plus"
             }
         }
@@ -134,7 +137,7 @@ struct AssistantSheet: View {
                     .padding(.horizontal)
                     .padding(.vertical, 10)
                 }
-                if tab != .chat, tab != .finish, tab != .teach, model.note.pages.count > 1 { scopeBar }
+                if tab != .chat, tab != .finish, tab != .teach, tab != .homework, model.note.pages.count > 1 { scopeBar }
                 if let progress = model.aiProgress {
                     Text(progress).font(.footnote).foregroundStyle(.secondary).padding(.horizontal).padding(.bottom, 6)
                 }
@@ -156,6 +159,8 @@ struct AssistantSheet: View {
                         MindMapView(model: model) { try await AI.mindMap(from: try await nonEmptyText(), using: model.digester()) }
                     case .teach:
                         TeachBackView(model: model)
+                    case .homework:
+                        HomeworkView(model: model)
                     case .finish:
                         GeneratedText(button: "Fill In What I Missed", insertInto: model) { partial in
                             guard !model.transcriptText.isEmpty else { throw StudyError.noTranscript }
@@ -232,6 +237,48 @@ struct TeachBackView: View {
                 let said = explanation.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !said.isEmpty else { throw StudyError.emptyExplanation }
                 return try await AI.reviewExplanation(said, against: await model.chatContext(for: said), onPartial: partial)
+            }
+        }
+    }
+}
+
+struct HomeworkView: View {
+    let model: EditorModel
+    @State private var question = ""
+    @State private var photo: PhotosPickerItem?
+    @State private var reading = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                PhotosPicker("Choose a Photo", selection: $photo, matching: .images)
+                if reading { ProgressView() }
+                Spacer()
+            }
+            .padding(.horizontal)
+            TextEditor(text: $question)
+                .frame(height: 130)
+                .scrollContentBackground(.hidden)
+                .padding(8)
+                .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal)
+                .accessibilityLabel("Your question")
+            GeneratedText(button: "Solve Step by Step", insertInto: model) { partial in
+                let asked = question.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !asked.isEmpty else { throw StudyError.emptyQuestion }
+                return try await AI.ask(.steps, about: asked, onPartial: partial)
+            }
+        }
+        .onChange(of: photo) { _, item in
+            guard let item else { return }
+            reading = true
+            Task {
+                defer {
+                    reading = false
+                    photo = nil
+                }
+                guard let data = try? await item.loadTransferable(type: Data.self), let image = UIImage(data: data) else { return }
+                question = await Task.detached(priority: .userInitiated) { Renderer.recognize(image) }.value
             }
         }
     }

@@ -42,9 +42,9 @@ final class ModelDownloads: NSObject {
         }
     }
 
-    private static let all = [ModelFile.writing, ModelFile.speech]
+    private static let all = [ModelFile.writing, ModelFile.speech, ModelFile.speechWorld]
     private nonisolated static func file(for task: URLSessionTask) -> ModelFile? {
-        [ModelFile.writing, ModelFile.speech].first { $0.name == task.taskDescription }
+        [ModelFile.writing, ModelFile.speech, ModelFile.speechWorld].first { $0.name == task.taskDescription }
     }
 
     func state(of file: ModelFile) -> State { states[file.name] ?? .absent }

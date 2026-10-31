@@ -5,10 +5,9 @@ import UIKit
 @MainActor final class LiveScribble: NSObject, @preconcurrency UIIndirectScribbleInteractionDelegate {
     private static let newBox = "new"
 
-    /// Handwriting wanders, so writing near a box counts as adding to it rather than starting another.
-    private static func target(for el: Element) -> CGRect {
-        el.rect.insetBy(dx: -max(el.fontSize * 3, 60), dy: -el.fontSize)
-    }
+    /// Only writing on top of a box adds to it. Anywhere else, even right beside it, the words stay where they were written.
+    private static func target(for el: Element) -> CGRect { el.rect }
+
     weak var model: EditorModel?
 
     func indirectScribbleInteraction(_ interaction: UIInteraction, requestElementsIn rect: CGRect, completion: @escaping ([String]) -> Void) {
@@ -60,7 +59,7 @@ import UIKit
                 completion(model.overlay.focusForScribble(el))
                 return
             }
-            let el = model.liveTextBox(continuing: focusReferencePoint) ?? model.addLiveTextBox(at: focusReferencePoint)
+            let el = model.addLiveTextBox(at: focusReferencePoint)
             let editor = model.overlay.focusForScribble(el)
             model.freshScribbleBoxID = el.id
             completion(editor)

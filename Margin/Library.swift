@@ -220,6 +220,7 @@ final class Library {
     func rename(_ id: UUID, to title: String) { edit(id) { $0.title = title } }
     func setTags(_ tags: [String], for id: UUID) { edit(id) { $0.tags = tags } }
     func setLocked(_ locked: Bool, for id: UUID) { edit(id) { $0.locked = locked } }
+    func setCover(_ hex: String?, for id: UUID) { edit(id) { $0.coverHex = hex } }
     var allTags: [String] { Array(Set(notes.filter { $0.deletedAt == nil }.flatMap(\.tags))).sorted() }
     func toggleFavorite(_ id: UUID) { edit(id) { $0.favorite.toggle() } }
     func move(_ id: UUID, to subject: UUID?) { edit(id) { $0.subjectID = subject } }
@@ -254,9 +255,10 @@ final class Library {
     func setTemplate(_ on: Bool, for id: UUID) { edit(id) { $0.isTemplate = on } }
     var templates: [Note] { notes.filter { $0.isTemplate && $0.deletedAt == nil }.sorted { $0.title < $1.title } }
 
-    func createNote(subject: UUID?, title: String?, page: Page) -> Note {
+    func createNote(subject: UUID?, title: String?, page: Page, boardWidth: CGFloat? = nil) -> Note {
         var note = Note(title: title ?? "Note \(Date().formatted(date: .abbreviated, time: .omitted))", subjectID: subject)
         note.pages = [page]
+        note.boardWidth = boardWidth
         store(note)
         return note
     }

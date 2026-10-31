@@ -1,4 +1,5 @@
 import CoreImage
+import PDFKit
 import PencilKit
 import UIKit
 import Vision
@@ -9,7 +10,7 @@ enum Renderer {
         if let index = page.pdfPage {
             ctx.setFillColor(UIColor.white.cgColor)
             ctx.fill(area)
-            if let pdfPage = pdf?.page(at: index + 1) { drawPDF(pdfPage, size: size, in: ctx) }
+            if let pdfPage = pdf?.page(at: index + 1) { drawPDF(pdfPage, size: CGSize(width: min(size.width, NoteLayout.width), height: size.height), in: ctx) }
             if dark { invert(area, in: ctx) }
             return
         }
@@ -18,7 +19,7 @@ enum Renderer {
         if let image {
             ctx.setFillColor(UIColor.white.cgColor)
             ctx.fill(area)
-            image.draw(in: area)
+            image.draw(in: CGRect(x: 0, y: 0, width: min(size.width, NoteLayout.width), height: size.height))
             if dark { invert(area, in: ctx) }
             return
         }
@@ -66,13 +67,28 @@ enum Renderer {
         case "rounded": .rounded
         default: nil
         }
+        var descriptor: UIFontDescriptor
         if let design {
-            let base = UIFont.systemFont(ofSize: el.fontSize, weight: el.bold ? .bold : .regular)
-            return base.fontDescriptor.withDesign(design).map { UIFont(descriptor: $0, size: el.fontSize) } ?? base
+            let base = UIFont.systemFont(ofSize: el.fontSize, weight: el.bold ? .bold : .regular).fontDescriptor
+            descriptor = base.withDesign(design) ?? base
+        } else {
+            descriptor = UIFontDescriptor(fontAttributes: [.family: el.fontName])
+            if el.bold { descriptor = descriptor.withSymbolicTraits(.traitBold) ?? descriptor }
         }
-        var descriptor = UIFontDescriptor(fontAttributes: [.family: el.fontName])
-        if el.bold { descriptor = descriptor.withSymbolicTraits(.traitBold) ?? descriptor }
+        if el.italic {
+            // A handwriting font rarely has an italic, so it's slanted by hand.
+            descriptor = descriptor.withSymbolicTraits(descriptor.symbolicTraits.union(.traitItalic))
+                ?? descriptor.withMatrix(CGAffineTransform(a: 1, b: 0, c: 0.2, d: 1, tx: 0, ty: 0))
+        }
         return UIFont(descriptor: descriptor, size: el.fontSize)
+    }
+
+    static func alignment(_ el: Element) -> NSTextAlignment {
+        switch el.align {
+        case "center": .center
+        case "right": .right
+        default: .left
+        }
     }
 
     static func textColor(_ el: Element, dark: Bool) -> UIColor {
@@ -82,7 +98,12 @@ enum Renderer {
 
     static func attributed(_ el: Element, dark: Bool = false) -> NSAttributedString {
         var attributes: [NSAttributedString.Key: Any] = [.font: font(el), .foregroundColor: textColor(el, dark: dark)]
-        if el.link != nil { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        if el.link != nil || el.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        if el.align != nil {
+            let style = NSMutableParagraphStyle()
+            style.alignment = alignment(el)
+            attributes[.paragraphStyle] = style
+        }
         return NSAttributedString(string: el.text, attributes: attributes)
     }
 
@@ -116,10 +137,14 @@ enum Renderer {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Where the box's text stops on the page, horizontally.
-    static func textEnd(_ el: Element) -> CGFloat {
-        let width = attributed(el).boundingRect(with: CGSize(width: el.rect.width - el.inset * 2, height: .greatestFiniteMagnitude), options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).width
-        return el.rect.minX + el.inset + ceil(width)
+    /// The font size at which this text covers about the same space as the handwriting it replaces.
+    /// Width says the most, but a word's height keeps a stretched or cramped word from going wrong.
+    static func fittedFontSize(_ el: Element, in ink: CGRect) -> CGFloat {
+        var sample = el
+        sample.fontSize = 20
+        let width = max(attributed(sample).size().width, 1)
+        let fitted = 20 * ink.width / width
+        return min(max(min(max(fitted, ink.height * 0.55), ink.height * 1.1), 11), 96).rounded()
     }
 
     static func textHeight(_ el: Element) -> CGFloat {
@@ -158,7 +183,7 @@ enum Renderer {
 
     static func rects(for note: Note) -> [CGRect] {
         let heights = note.pages.map(\.height)
-        return zip(NoteLayout.origins(heights), heights).map { CGRect(x: 0, y: $0, width: NoteLayout.width, height: $1) }
+        return zip(NoteLayout.origins(heights), heights).map { CGRect(x: 0, y: $0, width: note.width, height: $1) }
     }
 
     private static func draw(_ page: Page, rect: CGRect, note: Note, drawing: PKDrawing, pdf: CGPDFDocument?, dir: URL, inkScale: CGFloat, in ctx: CGContext) {
@@ -192,6 +217,7 @@ enum Renderer {
               !note.elements.contains(where: { $0.rect.intersects(rect) && !$0.isTape }) {
             pairs.removeLast()
         }
+        let contents = onlyPage == nil ? outline(of: note, source: dir.appendingPathComponent("source.pdf"), pageCount: pairs.count) : nil
         let data = UIGraphicsPDFRenderer(bounds: CGRect(x: 0, y: 0, width: NoteLayout.width, height: NoteLayout.paperHeight)).pdfData { ctx in
             for (page, rect) in pairs {
                 autoreleasepool {
@@ -204,6 +230,7 @@ enum Renderer {
                     }
                 }
             }
+            if let contents { CGPDFContextSetOutline(ctx.cgContext, contents as CFDictionary) }
         }
         let name = note.title.replacingOccurrences(of: "/", with: "-")
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name.isEmpty ? "Note" : name).appendingPathExtension("pdf")
@@ -211,9 +238,32 @@ enum Renderer {
         return url
     }
 
+    /// The original PDF's table of contents, then the pages bookmarked here, in the form a PDF context takes. Nil if there are neither.
+    /// PDFKit's own outline editing doesn't survive being written to a file.
+    private static func outline(of note: Note, source: URL, pageCount: Int) -> [String: Any]? {
+        var entries: [[String: Any]] = []
+        if let original = PDFDocument(url: source), let contents = original.outlineRoot {
+            let placed = Dictionary(note.pages.enumerated().compactMap { i, page in page.pdfPage.map { ($0, i) } }, uniquingKeysWith: { first, _ in first })
+            func copy(_ node: PDFOutline) -> [[String: Any]] {
+                (0..<node.numberOfChildren).compactMap { i in
+                    guard let child = node.child(at: i), let page = child.destination?.page, let index = placed[original.index(for: page)], index < pageCount else { return nil }
+                    var entry: [String: Any] = ["Title": child.label ?? "Untitled", "Destination": index + 1]
+                    let inner = copy(child)
+                    if !inner.isEmpty { entry["Children"] = inner }
+                    return entry
+                }
+            }
+            entries = copy(contents)
+        }
+        for (i, page) in note.pages.enumerated() where page.bookmarked && i < pageCount {
+            entries.append(["Title": "Page \(i + 1)", "Destination": i + 1])
+        }
+        return entries.isEmpty ? nil : ["Children": entries]
+    }
+
     static func thumbnail(page: Page, index: Int, note: Note, drawing: PKDrawing, pdf: CGPDFDocument?, dir: URL, width: CGFloat) -> UIImage {
         let rect = rects(for: note)[index]
-        let scale = width / NoteLayout.width
+        let scale = width / note.width
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         return UIGraphicsImageRenderer(size: CGSize(width: width, height: rect.height * scale), format: format).image { ctx in
@@ -396,15 +446,18 @@ enum Renderer {
     }
 
     static func recognizeInk(_ drawing: PKDrawing, rect: CGRect) -> String {
-        guard drawing.strokes.contains(where: { $0.renderBounds.intersects(rect) }) else { return "" }
-        let scale = min(2, maxInkTexture / max(rect.width, rect.height))
-        let ink = inkImage(drawing, rect: rect, scale: scale)
+        // Only around the writing: a whiteboard is mostly empty, and all of it would make an enormous image.
+        let written = drawing.strokes.reduce(CGRect.null) { $1.renderBounds.intersects(rect) ? $0.union($1.renderBounds) : $0 }
+        guard !written.isNull else { return "" }
+        let area = written.insetBy(dx: -48, dy: -48).intersection(rect)
+        let scale = min(2, maxInkTexture / max(area.width, area.height))
+        let ink = inkImage(drawing, rect: area, scale: scale)
         let format = UIGraphicsImageRendererFormat()
         format.scale = scale
-        let image = UIGraphicsImageRenderer(size: rect.size, format: format).image { ctx in
+        let image = UIGraphicsImageRenderer(size: area.size, format: format).image { ctx in
             UIColor.white.setFill()
-            ctx.fill(CGRect(origin: .zero, size: rect.size))
-            ink.draw(in: CGRect(origin: .zero, size: rect.size))
+            ctx.fill(CGRect(origin: .zero, size: area.size))
+            ink.draw(in: CGRect(origin: .zero, size: area.size))
         }
         return recognize(image)
     }

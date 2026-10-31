@@ -1,5 +1,13 @@
 import AVFoundation
 
+enum SpeechLanguage {
+    static let key = "speechLanguage"
+    static let all: [(code: String, name: String)] = [
+        ("en", "English"), ("auto", "Detect Automatically"), ("hi", "Hindi"), ("bn", "Bengali"), ("ta", "Tamil"), ("te", "Telugu"), ("mr", "Marathi"), ("ur", "Urdu"),
+        ("es", "Spanish"), ("fr", "French"), ("de", "German"), ("pt", "Portuguese"), ("ru", "Russian"), ("zh", "Chinese"), ("ja", "Japanese"), ("ko", "Korean"), ("ar", "Arabic"),
+    ]
+}
+
 /// Runs Whisper one request at a time on its own thread.
 final class LocalWhisper: @unchecked Sendable {
     static let shared = LocalWhisper()
@@ -7,6 +15,7 @@ final class LocalWhisper: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "margin.whisper", qos: .userInitiated)
     private var handle: OpaquePointer?
+    private var openModel: String?
 
     private final class Collector {
         var lines: [TranscriptLine] = []
@@ -15,9 +24,9 @@ final class LocalWhisper: @unchecked Sendable {
     }
 
 #if canImport(UIKit)
-    @MainActor static var isAvailable: Bool { margin_whisper_supported() && (ModelDownloads.shared.isInstalled(.speech) || ModelFile.speech.isInstalled) }
+    @MainActor static var isAvailable: Bool { margin_whisper_supported() && (ModelDownloads.shared.isInstalled(.speech) || ModelFile.speech.isInstalled || ModelFile.speechWorld.isInstalled) }
 #else
-    static var isAvailable: Bool { margin_whisper_supported() && ModelFile.speech.isInstalled }
+    static var isAvailable: Bool { margin_whisper_supported() && (ModelFile.speech.isInstalled || ModelFile.speechWorld.isInstalled) }
 #endif
 
     func transcribe(_ samples: [Float], offset: TimeInterval) async throws -> [TranscriptLine] {
@@ -29,12 +38,21 @@ final class LocalWhisper: @unchecked Sendable {
     }
 
     private func run(_ samples: [Float], offset: TimeInterval) throws -> [TranscriptLine] {
-        if handle == nil { handle = margin_whisper_open(ModelFile.speech.path.path) }
+        // Read for each chunk, so changing it during a recording takes effect straight away.
+        let wanted = UserDefaults.standard.string(forKey: SpeechLanguage.key) ?? "en"
+        let preferred = wanted == "en" ? ModelFile.speech : ModelFile.speechWorld
+        let model = preferred.isInstalled ? preferred : (wanted == "en" ? ModelFile.speechWorld : ModelFile.speech)
+        let language = model.name == ModelFile.speech.name ? "en" : wanted
+        if openModel != model.name {
+            margin_whisper_close(handle)
+            handle = margin_whisper_open(model.path.path)
+            openModel = handle == nil ? nil : model.name
+        }
         guard let handle else { throw AIError.failed }
         let collector = Collector(offset: offset)
         let threads = Int32(max(ProcessInfo.processInfo.activeProcessorCount - 2, 2))
         let status = samples.withUnsafeBufferPointer { buffer in
-            margin_whisper_transcribe(handle, buffer.baseAddress, Int32(buffer.count), threads, { start, _, text, user in
+            margin_whisper_transcribe(handle, buffer.baseAddress, Int32(buffer.count), threads, language, { start, _, text, user in
                 let collector = Unmanaged<Collector>.fromOpaque(user!).takeUnretainedValue()
                 let line = String(cString: text!).trimmingCharacters(in: .whitespacesAndNewlines)
                 if TextTools.isSpeech(line) { collector.lines.append(TranscriptLine(time: start + collector.offset, text: line)) }

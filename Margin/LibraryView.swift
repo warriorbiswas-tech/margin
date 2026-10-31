@@ -149,19 +149,38 @@ struct LibraryView: View {
         }
     }
 
+    private func file(_ note: Note) async throws -> Subject? {
+        let body = note.searchText + "\n" + note.elements.map(\.text).joined(separator: "\n")
+        let name = try await AI.folder(for: "\(note.title)\n\(body)", among: library.subjects.map(\.name))
+        guard let folder = library.subjects.first(where: { $0.name == name }) else { return nil }
+        library.move(note.id, to: folder.id)
+        return folder
+    }
+
     private func fileAutomatically(_ note: Note) {
-        let names = library.subjects.map(\.name)
-        guard !names.isEmpty else { return }
         busy = "Choosing a folder…"
         Task {
             defer { busy = nil }
             do {
-                let body = note.searchText + "\n" + note.elements.map(\.text).joined(separator: "\n")
-                let name = try await AI.folder(for: "\(note.title)\n\(body)", among: names)
-                guard let folder = library.subjects.first(where: { $0.name == name }) else { return }
-                library.move(note.id, to: folder.id)
-                busy = "Moved to \(library.path(of: folder))"
-                try? await Task.sleep(for: .seconds(1.5))
+                if let folder = try await file(note) {
+                    busy = "Moved to \(library.path(of: folder))"
+                    try? await Task.sleep(for: .seconds(1.5))
+                }
+            } catch {
+                library.lastError = error.localizedDescription
+            }
+        }
+    }
+
+    private func sortUnfiled() {
+        let waiting = library.notes.filter { $0.subjectID == nil && $0.deletedAt == nil && !$0.isTemplate && !$0.locked }
+        Task {
+            defer { busy = nil }
+            do {
+                for (i, note) in waiting.enumerated() {
+                    busy = "Sorting \(i + 1) of \(waiting.count)…"
+                    _ = try await file(note)
+                }
             } catch {
                 library.lastError = error.localizedDescription
             }
@@ -350,8 +369,18 @@ struct LibraryView: View {
                         ForEach(SortOrder.allCases) { Text($0.rawValue).tag($0) }
                     }
                 }
+                if shelf == .unfiled, AI.isAvailable, !library.subjects.isEmpty, !visibleNotes.isEmpty {
+                    Button("Sort into Folders", systemImage: "sparkles") { sortUnfiled() }
+                }
                 Button("Import PDF or Document", systemImage: "doc.badge.plus") { importing = true }
-                Button("New Note", systemImage: "square.and.pencil") { creating = true }
+                // A tap asks how the note should be set up. Holding it skips that, for writing something down right away.
+                Menu {
+                    Button("Quick Note", systemImage: "bolt") { open(library.createNote(subject: currentSubject)) }
+                } label: {
+                    Label("New Note", systemImage: "square.and.pencil")
+                } primaryAction: {
+                    creating = true
+                }
             }
         }
     }
@@ -394,6 +423,12 @@ struct LibraryView: View {
             }
             if AI.isAvailable, !library.subjects.isEmpty, !note.locked {
                 Button("File Automatically", systemImage: "sparkles") { fileAutomatically(note) }
+            }
+            Menu("Cover", systemImage: "book.closed") {
+                Button("First Page") { library.setCover(nil, for: note.id) }
+                ForEach(NoteCard.covers, id: \.hex) { cover in
+                    Button(cover.name) { library.setCover(cover.hex, for: note.id) }
+                }
             }
             Button(note.locked ? "Remove Lock" : "Lock with Face ID", systemImage: note.locked ? "lock.open" : "lock") {
                 setLock(note)
@@ -470,6 +505,25 @@ struct NoteCard: View {
     let note: Note
     let library: Library
 
+    static let covers = [
+        (name: "Navy", hex: "1F3A5F"), (name: "Forest", hex: "2F4F3E"), (name: "Oxblood", hex: "7A2E2E"),
+        (name: "Graphite", hex: "3B3B3F"), (name: "Ochre", hex: "8A6D3B"), (name: "Plum", hex: "5B4A7A"),
+    ]
+
+    private func cover(_ hex: String) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color(uiColor: UIColor(hex: hex))
+            // A notebook's stitched spine.
+            Rectangle().fill(.black.opacity(0.18)).frame(width: 12)
+            Text(note.title)
+                .font(.system(.title3, design: .serif).weight(.semibold))
+                .foregroundStyle(.white)
+                .lineLimit(4)
+                .padding(.leading, 26)
+                .padding([.top, .trailing], 16)
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // Every card is the same shape, whatever the page's, so a row of notes lines up.
@@ -481,6 +535,8 @@ struct NoteCard: View {
                             Color(.secondarySystemBackground)
                             Image(systemName: "lock.fill").font(.largeTitle).foregroundStyle(.secondary)
                         }
+                    } else if let hex = note.coverHex {
+                        cover(hex)
                     } else if let image = library.thumbnail(for: note.id) {
                         Image(uiImage: image).resizable().scaledToFill()
                     }
@@ -532,6 +588,7 @@ struct SettingsView: View {
     @AppStorage("scribbleErase") private var scribbleErase = true
     @AppStorage("holdForShapes") private var holdForShapes = true
     @AppStorage("liveTranscribe") private var liveTranscribe = true
+    @AppStorage(SpeechLanguage.key) private var speechLanguage = "en"
     @AppStorage("eraserReturns") private var eraserReturns = true
     @AppStorage("theme") private var theme = "system"
     @AppStorage("invertPages") private var invertPages = true
@@ -560,12 +617,20 @@ struct SettingsView: View {
                     Toggle("Hold to Draw Shapes", isOn: $holdForShapes)
                     Toggle("Return to Pen After Erasing", isOn: $eraserReturns)
                 }
-                Section("Recording") {
+                Section {
                     Toggle("Live Transcription", isOn: $liveTranscribe)
+                    Picker("Language", selection: $speechLanguage) {
+                        ForEach(SpeechLanguage.all, id: \.code) { Text($0.name).tag($0.code) }
+                    }
+                } header: {
+                    Text("Recording")
+                } footer: {
+                    if speechLanguage != "en" { Text("Languages other than English use the Other Languages model, downloaded below.") }
                 }
                 Section {
                     LabeledContent(ModelFile.writing.title) { ModelRow(file: .writing) }
                     LabeledContent(ModelFile.speech.title) { ModelRow(file: .speech) }
+                    LabeledContent(ModelFile.speechWorld.title) { ModelRow(file: .speechWorld) }
                     NavigationLink("Open-Source Licenses") { LicensesView() }
                 } header: {
                     Text("On-Device AI")

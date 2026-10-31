@@ -8,7 +8,7 @@ import WebKit
 struct WebPanel: View {
     let model: EditorModel
     @State private var address = ""
-    @State private var web = WKWebView()
+    private var web: WKWebView { model.web }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -19,8 +19,15 @@ struct WebPanel: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .onSubmit(go)
-                Button("Close Browser", systemImage: "xmark") { model.showWeb = false }
-                    .labelStyle(.iconOnly)
+                Button(model.webFloating ? "Dock Beside the Page" : "Float over the Page", systemImage: model.webFloating ? "sidebar.right" : "pip") {
+                    model.webFloating.toggle()
+                }
+                .labelStyle(.iconOnly)
+                Button("Close Browser", systemImage: "xmark") {
+                    web.pauseAllMediaPlayback()
+                    model.showWeb = false
+                }
+                .labelStyle(.iconOnly)
             }
             .padding(8)
             WebHost(web: web)
@@ -40,7 +47,6 @@ struct WebPanel: View {
             }
             .padding(8)
         }
-        .frame(width: 400)
         .background(.bar)
     }
 
@@ -56,6 +62,36 @@ struct WebPanel: View {
             url = parts?.url
         }
         if let url { web.load(URLRequest(url: url)) }
+    }
+}
+
+/// A browser that floats over the page, for writing notes while a video plays.
+struct FloatingWeb: View {
+    let model: EditorModel
+    @State private var moved = CGSize.zero
+    @GestureState private var dragging = CGSize.zero
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Capsule()
+                .fill(.secondary)
+                .frame(width: 44, height: 5)
+                .frame(maxWidth: .infinity, minHeight: 26)
+                .background(.bar)
+                .contentShape(Rectangle())
+                .gesture(DragGesture().updating($dragging) { value, state, _ in state = value.translation }.onEnded { value in
+                    moved.width += value.translation.width
+                    moved.height += value.translation.height
+                })
+                .accessibilityLabel("Move window")
+            WebPanel(model: model)
+        }
+        .frame(width: 420, height: 400)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
+        .padding(16)
+        .padding(.top, 130) // clear of the toolbars, which it would otherwise open on top of
+        .offset(x: moved.width + dragging.width, y: moved.height + dragging.height)
     }
 }
 
@@ -244,7 +280,12 @@ struct NewNoteSheet: View {
     @State private var choosingDesign = false
     @State private var addingFolder = false
     @State private var folderName = ""
-    @State private var endless = false
+    @State private var layout = Layout.pages
+
+    enum Layout: String, CaseIterable, Identifiable {
+        case pages = "Pages", endless = "Endless Page", whiteboard = "Whiteboard"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         NavigationStack {
@@ -299,11 +340,17 @@ struct NewNoteSheet: View {
                     Picker("Page Size", selection: $size) {
                         ForEach(PageSize.allCases) { Text($0.title).tag($0) }
                     }
-                    Toggle("Endless Page", isOn: $endless)
+                    Picker("Layout", selection: $layout) {
+                        ForEach(Layout.allCases) { Text($0.rawValue).tag($0) }
+                    }
                 } header: {
                     Text("Notebook Design")
                 } footer: {
-                    if endless { Text("One long page that grows as you write, for brainstorms and sketches.") }
+                    switch layout {
+                    case .pages: EmptyView()
+                    case .endless: Text("One long page that grows as you write, for brainstorms and sketches.")
+                    case .whiteboard: Text("A big blank canvas with room in every direction. It keeps growing to the right and downward as you work.")
+                    }
                 }
                 if !library.templates.isEmpty {
                     Section("My Templates") {
@@ -343,9 +390,15 @@ struct NewNoteSheet: View {
     }
 
     private func create() {
-        let page = Page(height: size.height, style: style, color: color, endless: endless ? true : nil)
         let title = name.trimmingCharacters(in: .whitespaces)
-        let note = library.createNote(subject: folder, title: title.isEmpty ? nil : title, page: page)
+        let page: Page, board: CGFloat?
+        switch layout {
+        case .pages: (page, board) = (Page(height: size.height, style: style, color: color), nil)
+        case .endless: (page, board) = (Page(height: size.height, style: style, color: color, endless: true), nil)
+        // Plain, because a printed pattern this large would have to be redrawn for every part of the board on screen.
+        case .whiteboard: (page, board) = (Page(height: Note.boardSize.height, style: .blank, color: color, endless: true), Note.boardSize.width)
+        }
+        let note = library.createNote(subject: folder, title: title.isEmpty ? nil : title, page: page, boardWidth: board)
         dismiss()
         onCreate(note, setup)
     }

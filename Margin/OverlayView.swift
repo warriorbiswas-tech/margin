@@ -340,6 +340,9 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         model.textColor = UIColor(hex: el.colorHex)
         model.textFont = el.fontName
         model.textBold = el.bold
+        model.textItalic = el.italic
+        model.textUnderline = el.underline
+        model.textAlign = el.align
         model.editingElementID = el.id
         model.syncElements()
 
@@ -350,9 +353,8 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         view.isScrollEnabled = false
         view.textContainerInset = UIEdgeInsets(top: el.inset, left: el.inset, bottom: el.inset, right: el.inset)
         view.textContainer.lineFragmentPadding = 0
-        view.font = Renderer.font(el)
-        view.textColor = Renderer.textColor(el, dark: model.darkPages)
         view.text = el.text
+        applyStyle(of: el, to: view)
         view.delegate = self
         view.contentScaleFactor = window?.screen.scale ?? 2
         if model.scribbleActive {
@@ -380,11 +382,16 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
 
     func textViewDidChange(_ textView: UITextView) {
         guard let model, let id = model.editingElementID else { return }
+        let firstWords = model.freshScribbleBoxID == id
         model.freshScribbleBoxID = nil
         model.updateElement(id) { el in
             el.text = textView.text
             el.rect.size.height = Renderer.textHeight(el)
             textView.frame = el.rect
+        }
+        if firstWords || model.scribbleActive {
+            model.fitLiveBox(id, toInk: firstWords)
+            styleDidChange()
         }
         refreshSelection()
     }
@@ -392,10 +399,24 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
     func styleDidChange() {
         guard let model, let editor, let id = model.editingElementID,
               let el = model.note.elements.first(where: { $0.id == id }) else { return }
-        editor.font = Renderer.font(el)
-        editor.textColor = Renderer.textColor(el, dark: model.darkPages)
+        applyStyle(of: el, to: editor)
         editor.frame = el.rect
         refreshSelection()
+    }
+
+    /// Only attributes change, never the characters, so Scribble can keep writing into the box.
+    private func applyStyle(of el: Element, to view: UITextView) {
+        view.font = Renderer.font(el)
+        view.textColor = Renderer.textColor(el, dark: model?.darkPages ?? false)
+        view.textAlignment = Renderer.alignment(el)
+        let whole = NSRange(location: 0, length: view.textStorage.length)
+        if el.underline {
+            view.textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: whole)
+            view.typingAttributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        } else {
+            view.textStorage.removeAttribute(.underlineStyle, range: whole)
+            view.typingAttributes[.underlineStyle] = nil
+        }
     }
 
     @objc private func keyboardDidShow() {

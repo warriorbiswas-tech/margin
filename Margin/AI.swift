@@ -44,6 +44,15 @@ struct ModelFile: Sendable {
         bytes: 190_098_681,
         sha256: "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30"
     )
+
+    /// Understands other languages, though less accurately in English, which is why it's a second model and not the only one.
+    static let speechWorld = ModelFile(
+        name: "ggml-small-q5_1.bin",
+        title: "Other Languages",
+        url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin")!,
+        bytes: 190_085_487,
+        sha256: "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"
+    )
 }
 
 /// Runs the writing model one request at a time on its own thread.
@@ -382,6 +391,10 @@ enum AI {
             ("user", "Folders: \(names.joined(separator: ", "))\n<notes>\n\(String(text.prefix(4000)))\n</notes>"),
         ]
         return try await LocalLLM.shared.generate(messages: turns, maxTokens: 40, grammar: "root ::= " + names.map(literal).joined(separator: " | "), onPartial: nil)
+    }
+
+    static func cleanTranscript(_ text: String) async throws -> String {
+        try await complete(system: "Speech recognition often writes a word as similar-sounding words. Rewrite this transcript with those mistakes corrected, full sentences and punctuation. Don't add or remove any points. For example, today we cover photo sin thesis it makes sugar in the sell becomes: Today we cover photosynthesis. It makes sugar in the cell. Reply with only the corrected transcript.", prompt: text, maxTokens: 2400)
     }
 
     static func translate(_ text: String, to language: String) async throws -> String {

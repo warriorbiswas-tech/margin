@@ -7,6 +7,19 @@ enum NoteLayout {
     static let paperHeight: CGFloat = 994 // US Letter ratio
     static let gap: CGFloat = 20
 
+    /// Recognition only roughly locates each line it reads. Giving each stroke to the nearest line and
+    /// measuring the strokes themselves says exactly where each line was written.
+    static func inkBounds(ofLines lines: [CGRect], strokes: [CGRect]) -> [CGRect] {
+        var found = [CGRect](repeating: .null, count: lines.count)
+        for stroke in strokes {
+            let p = CGPoint(x: stroke.midX, y: stroke.midY)
+            func distance(_ r: CGRect) -> CGFloat { hypot(max(r.minX - p.x, 0, p.x - r.maxX), max(r.minY - p.y, 0, p.y - r.maxY)) }
+            guard let nearest = lines.indices.min(by: { distance(lines[$0]) < distance(lines[$1]) }) else { continue }
+            found[nearest] = found[nearest].union(stroke)
+        }
+        return zip(found, lines).map { $0.isNull ? $1 : $0 }
+    }
+
     static func origins(_ heights: [CGFloat]) -> [CGFloat] {
         var y: CGFloat = 0
         return heights.map { h in

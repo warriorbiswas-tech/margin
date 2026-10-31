@@ -19,6 +19,14 @@ check(swapped[0] == 220 && swapped[1] == -120 && swapped[2] == 0, "swapping page
 let deleted = NoteLayout.shifts(old: old, new: [old[0], old[2]])
 check(deleted[0] == 0 && deleted[1] == nil && deleted[2] == -220, "deleting drops its ink and pulls later pages up")
 
+// Live Text stays where it was written
+let readLines = [CGRect(x: 90, y: 100, width: 120, height: 40), CGRect(x: 90, y: 200, width: 120, height: 40)]
+let written = [CGRect(x: 100, y: 105, width: 30, height: 30), CGRect(x: 140, y: 108, width: 40, height: 30), CGRect(x: 110, y: 210, width: 50, height: 25)]
+let placed = NoteLayout.inkBounds(ofLines: readLines, strokes: written)
+check(placed[0] == CGRect(x: 100, y: 105, width: 80, height: 33), "a line sits exactly on its own strokes")
+check(placed[1] == written[2], "strokes go to the nearest line")
+check(NoteLayout.inkBounds(ofLines: readLines, strokes: []) == readLines, "no strokes falls back to what was read")
+
 // Shape snapping
 let wobblyLine = (0...30).map { CGPoint(x: CGFloat($0) * 10, y: 100 + sin(CGFloat($0)) * 3) }
 guard case .line = ShapeSnap.recognize(wobblyLine) else { fatalError("wobbly line") }

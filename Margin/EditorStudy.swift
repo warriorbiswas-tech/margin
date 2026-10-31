@@ -19,7 +19,6 @@ extension EditorModel {
             guard let i = note.elements.firstIndex(where: { $0.id == edit.id }) else { continue }
             if edit.text.isEmpty {
                 if selectedElementID == edit.id { selectedElementID = nil }
-                if liveTailID == edit.id { liveTailID = nil }
                 note.elements.remove(at: i)
             } else {
                 note.elements[i].text = edit.text
@@ -30,7 +29,7 @@ extension EditorModel {
 
     /// PencilKit's eraser only knows about ink, so typed words under its path are removed here.
     func eraserTouch(_ touch: UITouch, began: Bool) {
-        guard tool == .eraser, playing == nil, touch.type == .pencil || fingerDrawing else {
+        guard tool == .eraser, playing == nil, !readOnly, touch.type == .pencil || fingerDrawing else {
             eraserTrailPoint = nil
             return
         }
@@ -321,7 +320,7 @@ extension EditorModel {
         zoomCanvas.drawing = canvas.drawing
         zoomCanvas.tool = canvas.tool
         let c = visibleCenter()
-        zoomRect.origin = CGPoint(x: 40, y: max(c.y - 200, 0))
+        zoomRect.origin = CGPoint(x: note.boardWidth == nil ? 40 : max(c.x - 150, 0), y: max(c.y - 200, 0))
     }
 
     func layoutZoom() {
@@ -332,7 +331,7 @@ extension EditorModel {
         zoomCanvas.minimumZoomScale = z
         zoomCanvas.maximumZoomScale = z
         zoomCanvas.zoomScale = z
-        zoomCanvas.contentSize = CGSize(width: NoteLayout.width * z, height: total * z)
+        zoomCanvas.contentSize = CGSize(width: note.width * z, height: total * z)
         zoomCanvas.contentOffset = CGPoint(x: zoomRect.minX * z, y: zoomRect.minY * z)
         zoomBackground.frame = CGRect(x: zoomRect.minX * z, y: zoomRect.minY * z, width: zoomRect.width * z, height: zoomRect.height * z)
         zoomBackground.image = Renderer.snapshot(note: note, drawing: PKDrawing(), rect: zoomRect, dir: library.dir(note.id), scale: z * 2, dark: darkPages)
@@ -341,7 +340,7 @@ extension EditorModel {
 
     func moveZoom(dx: CGFloat, dy: CGFloat) {
         let total = NoteLayout.totalHeight(note.pages.map(\.height))
-        zoomRect.origin.x = min(max(zoomRect.minX + dx * zoomRect.width, 0), NoteLayout.width - zoomRect.width)
+        zoomRect.origin.x = min(max(zoomRect.minX + dx * zoomRect.width, 0), note.width - zoomRect.width)
         zoomRect.origin.y = min(max(zoomRect.minY + dy * zoomRect.height, 0), max(total - zoomRect.height, 0))
         layoutZoom()
         let z = canvas.zoomScale
@@ -349,7 +348,7 @@ extension EditorModel {
     }
 
     func zoomNextLine() {
-        zoomRect.origin.x = 40
+        if note.boardWidth == nil { zoomRect.origin.x = 40 }
         moveZoom(dx: 0, dy: 1)
     }
 
@@ -361,7 +360,7 @@ extension EditorModel {
             if canvas.drawing != zoomCanvas.drawing { canvas.drawing = zoomCanvas.drawing }
             if wasNew { scheduleLiveText() }
             if wasNew, let last = zoomCanvas.drawing.strokes.last, last.renderBounds.maxX > zoomRect.maxX - zoomRect.width * 0.15 {
-                if zoomRect.maxX >= NoteLayout.width - 1 { zoomNextLine() } else { moveZoom(dx: 0.6, dy: 0) }
+                if zoomRect.maxX >= note.width - 1 { zoomNextLine() } else { moveZoom(dx: 0.6, dy: 0) }
             }
             return true
         }
@@ -495,10 +494,11 @@ extension EditorModel {
         checkpoint()
         let kept = canvas.drawing.strokes.filter { !dates.contains($0.path.creationDate) }
         setInk(PKDrawing(strokes: kept))
-        for line in lines {
-            let rect = CGRect(x: area.minX + line.box.minX * area.width,
-                              y: area.minY + (1 - line.box.maxY) * area.height,
-                              width: line.box.width * area.width, height: line.box.height * area.height)
+        let read = lines.map { line in
+            CGRect(x: area.minX + line.box.minX * area.width, y: area.minY + (1 - line.box.maxY) * area.height,
+                   width: line.box.width * area.width, height: line.box.height * area.height)
+        }
+        for (line, rect) in zip(lines, NoteLayout.inkBounds(ofLines: read, strokes: strokes.map(\.renderBounds))) {
             place(line.text, in: rect, font: font, colorHex: color, live: live)
         }
         syncElements()
@@ -506,45 +506,78 @@ extension EditorModel {
         return true
     }
 
-    /// Live text picks up where the last word ended, so a sentence written in bursts stays one line of type.
+    /// Type goes exactly where the handwriting was, at about its size, so a page keeps the layout it was written with.
     private func place(_ text: String, in rect: CGRect, font: String, colorHex: String, live: Bool) {
-        let size = liveSize > 0 && live ? CGFloat(liveSize) : min(max((rect.height * 0.8).rounded(), 11), 64)
-        if live, let id = liveTailID, let i = note.elements.firstIndex(where: { $0.id == id }) {
-            let tail = note.elements[i]
-            let sameLine = abs(rect.midY - tail.rect.midY) < max(tail.rect.height, rect.height) * 0.7
-            let textEnd = tail.rect.minX + (Renderer.attributed(tail).size().width)
-            if sameLine, rect.minX >= tail.rect.minX, rect.minX - textEnd < tail.fontSize * 4 {
-                // A pause mid-word arrives as a piece right beside the last one, so only a real gap gets a space.
-                note.elements[i].text += (rect.minX - textEnd < tail.fontSize * 0.3 ? "" : " ") + text
-                let width = Renderer.attributed(note.elements[i]).size().width + tail.fontSize
-                note.elements[i].rect.size.width = min(max(width, tail.rect.width), NoteLayout.width - tail.rect.minX)
-                note.elements[i].rect.size.height = Renderer.textHeight(note.elements[i])
-                return
-            }
-        }
-        var el = Element(rect: CGRect(x: rect.minX, y: rect.minY, width: 100, height: 30), text: text, fontSize: size, colorHex: colorHex, fontName: font)
-        let width = Renderer.attributed(el).size().width + size
-        el.rect.size.width = min(max(width, 60), NoteLayout.width - rect.minX)
-        el.rect.size.height = Renderer.textHeight(el)
+        var el = Element(rect: rect, text: text, colorHex: colorHex, fontName: font)
+        el.fontSize = liveSize > 0 && live ? CGFloat(liveSize) : Renderer.fittedFontSize(el, in: rect)
+        if live, liveSize == 0 { el.fontSize = fontSizeOnLine(of: rect, near: el.fontSize, excluding: el.id) ?? el.fontSize }
+        wrapToText(&el, centeredOn: rect)
         note.elements.append(el)
-        if live { liveTailID = el.id }
     }
 
-    /// The box whose line this writing carries on, so words written side by side stay one line of text.
-    func liveTextBox(continuing point: CGPoint) -> Element? {
+    /// Handwriting varies from word to word and type shouldn't, so a word beside another takes its size, unless it's clearly meant to be bigger.
+    private func fontSizeOnLine(of ink: CGRect, near size: CGFloat, excluding id: UUID) -> CGFloat? {
         note.elements.last { el in
-            guard el.imageFile == nil, !el.isTape, el.cover == nil, el.comment == nil, !el.stamp, el.link == nil,
-                  !el.text.isEmpty, abs(point.y - el.rect.midY) <= max(el.rect.height, el.fontSize * 2) / 2 + el.fontSize * 0.5 else { return false }
-            return point.x >= el.rect.minX - el.fontSize && point.x <= Renderer.textEnd(el) + el.fontSize * 6
+            guard el.id != id, !el.text.isEmpty, el.imageFile == nil, !el.isTape, el.cover == nil, el.comment == nil, !el.stamp, el.fillHex == nil, el.link == nil else { return false }
+            let gap = max(ink.minX - el.rect.maxX, el.rect.minX - ink.maxX)
+            return abs(el.rect.midY - ink.midY) < max(ink.height, el.fontSize) * 0.6 && gap < max(ink.height * 5, 120)
+                && el.fontSize / size > 0.6 && el.fontSize / size < 1.6
+        }?.fontSize
+    }
+
+    private func wrapToText(_ el: inout Element, centeredOn ink: CGRect?) {
+        let left = ink?.minX ?? el.rect.minX
+        el.rect.origin.x = min(left, note.width - 60)
+        let room = note.width - el.rect.minX - 4, wide = Renderer.attributed(el).size().width
+        // Words written up against the page's edge get smaller rather than wrapping onto lines the writing never had.
+        if wide > room, el.fontSize != CGFloat(liveSize) { el.fontSize = max((el.fontSize * room / wide).rounded(.down), 11) }
+        el.rect.size.width = min(ceil(Renderer.attributed(el).size().width) + 4, note.width - el.rect.minX)
+        el.rect.size.height = Renderer.textHeight(el)
+        if let ink { el.rect.origin.y = ink.midY - el.rect.height / 2 }
+    }
+
+    /// Scribble's words have landed in a new box, so it can take on the place and size of the writing they came from.
+    func fitLiveBox(_ id: UUID, toInk: Bool = true) {
+        defer { liveInk = nil }
+        guard let i = note.elements.firstIndex(where: { $0.id == id }), !note.elements[i].text.isEmpty else { return }
+        guard toInk else {
+            // More words written into a box. It grows along its line, keeping its place and size.
+            var el = note.elements[i]
+            wrapToText(&el, centeredOn: nil)
+            note.elements[i] = el
+            syncElements()
+            return
         }
+        // Too small to be a whole word means the system kept most of the touches for itself.
+        let ink = liveInk.flatMap { $0.width >= 12 && $0.height >= 6 ? $0 : nil }
+        var el = note.elements[i]
+        if let ink, liveSize == 0 {
+            el.fontSize = Renderer.fittedFontSize(el, in: ink)
+            el.fontSize = fontSizeOnLine(of: ink, near: el.fontSize, excluding: id) ?? el.fontSize
+        }
+        wrapToText(&el, centeredOn: ink)
+        note.elements[i] = el
+        syncElements()
+        scheduleSave()
+    }
+
+    /// Where the Pencil has been since the last words landed, in page coordinates.
+    func liveTouch(_ touch: UITouch, began: Bool) {
+        guard scribbleActive, touch.type == .pencil else { return }
+        let z = max(canvas.zoomScale, 0.01), location = touch.location(in: canvas)
+        let point = CGRect(x: location.x / z, y: location.y / z, width: 0, height: 0)
+        // A long pause means whatever came before never became text.
+        if began, Date().timeIntervalSince(lastLiveTouch) > 2 { liveInk = nil }
+        lastLiveTouch = Date()
+        liveInk = liveInk?.union(point) ?? point
     }
 
     /// A new text box for Scribble, starting where the Pencil came down and running to the page edge.
     func addLiveTextBox(at point: CGPoint) -> Element {
         checkpoint()
         let size = liveSize > 0 ? CGFloat(liveSize) : 22
-        let x = max(min(point.x, NoteLayout.width - 120), 0)
-        var el = Element(rect: CGRect(x: x, y: point.y - size * 0.7, width: NoteLayout.width - x - 12, height: 30),
+        let x = max(min(point.x, note.width - 120), 0)
+        var el = Element(rect: CGRect(x: x, y: point.y - size * 0.7, width: note.width - x - 12, height: 30),
                          fontSize: size, colorHex: penColor.hex, fontName: liveFont)
         el.rect.size.height = Renderer.textHeight(el)
         note.elements.append(el)
@@ -763,7 +796,7 @@ extension EditorModel {
                 return
             }
             checkpoint()
-            addText("= \(answer)", at: CGRect(x: min(rect.maxX + 8, NoteLayout.width - 208), y: rect.midY - 14, width: 200, height: 30))
+            addText("= \(answer)", at: CGRect(x: min(rect.maxX + 8, note.width - 208), y: rect.midY - 14, width: 200, height: 30))
             regionRect = nil
         }
     }
@@ -900,7 +933,8 @@ extension EditorModel {
     func insertText(_ text: String) {
         checkpoint()
         let c = visibleCenter()
-        let rect = CGRect(x: 48, y: max(c.y - 200, 8), width: NoteLayout.width - 96, height: 30)
+        let rect = note.boardWidth == nil ? CGRect(x: 48, y: max(c.y - 200, 8), width: note.width - 96, height: 30)
+            : CGRect(x: max(c.x - 300, 8), y: max(c.y - 200, 8), width: 600, height: 30)
         // Over a PDF's own text, only a filled note stays readable.
         if note.pages[NoteLayout.pageIndex(y: c.y, heights: note.pages.map(\.height))].pdfPage != nil {
             tool = .text

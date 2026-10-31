@@ -132,7 +132,7 @@ private struct ZoomMenu: View {
     var body: some View {
         Menu {
             Button("Fit Page to Width") { model.setZoom(percent: 100) }
-            ForEach([40, 50, 75, 125, 150, 200, 300, 400], id: \.self) { percent in
+            ForEach((model.note.boardWidth == nil ? [] : [20, 25]) + [40, 50, 75, 125, 150, 200, 300, 400], id: \.self) { percent in
                 Button("\(percent)%") { model.setZoom(percent: CGFloat(percent)) }
             }
         } label: {
@@ -264,7 +264,7 @@ struct EditorView: View {
                 if !model.focusMode {
                     TabStrip(model: model, onOpen: onOpen, onLeave: onClose)
                     topBar
-                    if model.playing == nil { optionsBar }
+                    if model.playing == nil, !model.readOnly { optionsBar }
                     Divider()
                 }
                 HStack(spacing: 0) {
@@ -288,11 +288,15 @@ struct EditorView: View {
                             }
                         }
                     if model.showLivePanel { Divider(); LivePanel(model: model) }
-                    if model.showWeb { Divider(); WebPanel(model: model) }
+                    if model.showWeb, !model.webFloating {
+                        Divider()
+                        WebPanel(model: model).frame(width: 400)
+                    }
                 }
                 if model.zoomOn { ZoomPanel(model: model) }
                 if model.playing != nil { playbackBar }
             }
+            if model.showWeb, model.webFloating { FloatingWeb(model: model) }
             if model.focusMode {
                 Button("Exit Focus Mode", systemImage: "arrow.down.right.and.arrow.up.left") { model.focusMode = false }
                     .labelStyle(.iconOnly)
@@ -442,11 +446,11 @@ struct EditorView: View {
 
     private var topBar: some View {
         Group {
-            if model.playing != nil {
+            if model.playing != nil || model.readOnly {
                 HStack(spacing: 2) {
                     titleControls
                     Spacer(minLength: 4)
-                    Text("Tap your notes to jump to that moment").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Text(model.readOnly ? "Read Only" : "Tap your notes to jump to that moment").font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     Spacer(minLength: 4)
                     noteControls
                 }
@@ -495,10 +499,10 @@ struct EditorView: View {
         HStack(spacing: 2) {
             ZoomMenu(model: model)
             IconButton(icon: "arrow.uturn.backward", label: "Undo") { model.undo() }
-                .disabled(!model.canUndo || model.playing != nil)
+                .disabled(!model.canUndo || model.playing != nil || model.readOnly)
                 .keyboardShortcut("z", modifiers: .command)
             IconButton(icon: "arrow.uturn.forward", label: "Redo") { model.redo() }
-                .disabled(!model.canRedo || model.playing != nil)
+                .disabled(!model.canRedo || model.playing != nil || model.readOnly)
                 .keyboardShortcut("z", modifiers: [.command, .shift])
             recordControl
             IconButton(icon: "graduationcap", label: "Study") { panel = .assistant }
@@ -615,12 +619,15 @@ struct EditorView: View {
                 model.saveNow()
                 panel = .versions
             }
-            Button("Add Page", systemImage: "plus.rectangle.portrait") { model.addPage() }
+            if model.note.boardWidth == nil {
+                Button("Add Page", systemImage: "plus.rectangle.portrait") { model.addPage() }
+            }
             Divider()
             Toggle("Zoom Writing Window", systemImage: "rectangle.and.pencil.and.ellipsis", isOn: $model.zoomOn)
             Toggle("Web Browser", systemImage: "globe", isOn: $model.showWeb)
             Button("Read Aloud", systemImage: "speaker.wave.2") { model.toggleReadAloud() }
             Button("Focus Mode", systemImage: "arrow.up.left.and.arrow.down.right") { model.focusMode = true }
+            Toggle("Read Only", systemImage: "book", isOn: $model.readOnly)
             Picker("Theme", systemImage: "circle.lefthalf.filled", selection: $theme) {
                 Text("Match iPad").tag("system")
                 Text("Light").tag("light")
@@ -675,6 +682,16 @@ struct EditorView: View {
                     }
                     OptionToggle(title: "Bold", isOn: $model.textBold)
                         .onChange(of: model.textBold) { model.applyTextStyle() }
+                    OptionToggle(title: "Italic", isOn: $model.textItalic)
+                        .onChange(of: model.textItalic) { model.applyTextStyle() }
+                    OptionToggle(title: "Underline", isOn: $model.textUnderline)
+                        .onChange(of: model.textUnderline) { model.applyTextStyle() }
+                    HStack(spacing: 0) {
+                        IconButton(icon: "text.alignleft", active: model.textAlign == nil, label: "Align Left") { model.textAlign = nil }
+                        IconButton(icon: "text.aligncenter", active: model.textAlign == "center", label: "Align Center") { model.textAlign = "center" }
+                        IconButton(icon: "text.alignright", active: model.textAlign == "right", label: "Align Right") { model.textAlign = "right" }
+                    }
+                    .onChange(of: model.textAlign) { model.applyTextStyle() }
                     colorRow(swatches, selection: $model.textColor)
                         .onChange(of: model.textColor) { model.applyTextStyle() }
                     if let selected = model.selectedElement {
@@ -921,6 +938,7 @@ struct TextResultSheet: View {
 
 struct LivePanel: View {
     @Bindable var model: EditorModel
+    @AppStorage(SpeechLanguage.key) private var speechLanguage = "en"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -955,7 +973,15 @@ struct LivePanel: View {
                 .padding(.horizontal, 12)
                 Divider().padding(.top, 8)
             }
-            Text("Live Transcript").font(.headline).padding(12)
+            HStack {
+                Text("Live Transcript").font(.headline)
+                Spacer()
+                Picker("Language", selection: $speechLanguage) {
+                    ForEach(SpeechLanguage.all, id: \.code) { Text($0.name).tag($0.code) }
+                }
+                .pickerStyle(.menu)
+            }
+            .padding(12)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
@@ -985,6 +1011,26 @@ struct LivePanel: View {
 struct TranscriptSheet: View {
     let model: EditorModel
     @Environment(\.dismiss) private var dismiss
+    @State private var result: TextResult?
+    @State private var resultTitle = ""
+    @State private var working: String?
+    @State private var problem: String?
+
+    /// A long talk is more than the model can take at once, so it goes through a piece at a time.
+    private func rewrite(_ text: String, title: String, doing: String, _ piece: @escaping (String) async throws -> String) {
+        working = doing
+        resultTitle = title
+        Task {
+            defer { working = nil }
+            do {
+                var parts: [String] = []
+                for chunk in TextTools.chunks(text, size: 6000) { parts.append(try await piece(chunk)) }
+                result = TextResult(text: parts.joined(separator: "\n\n"))
+            } catch {
+                problem = error.localizedDescription
+            }
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -1024,7 +1070,38 @@ struct TranscriptSheet: View {
             }
             .navigationTitle("Transcript")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .primaryAction) {
+                    if AI.isAvailable, let lines = model.playing?.transcript, !lines.isEmpty {
+                        let spoken = lines.map(\.text).joined(separator: " ")
+                        Menu("Improve", systemImage: "sparkles") {
+                            Button("Clean Up", systemImage: "wand.and.stars") {
+                                rewrite(spoken, title: "Cleaned Up", doing: "Cleaning up…") { try await AI.cleanTranscript($0) }
+                            }
+                            Menu("Translate", systemImage: "character.bubble") {
+                                ForEach(["English", "Hindi", "Spanish", "French", "German", "Chinese", "Japanese", "Arabic"], id: \.self) { language in
+                                    Button(language) {
+                                        rewrite(spoken, title: "Translation", doing: "Translating…") { try await AI.translate($0, to: language) }
+                                    }
+                                }
+                            }
+                        }
+                        .disabled(working != nil)
+                    }
+                }
+            }
+            .overlay {
+                if let working {
+                    ProgressView(working).padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .sheet(item: $result) { TextResultSheet(title: resultTitle, text: $0.text) }
+            .alert("Margin", isPresented: Binding(get: { problem != nil }, set: { if !$0 { problem = nil } })) {
+                Button("OK") {}
+            } message: {
+                Text(problem ?? "")
+            }
         }
     }
 }

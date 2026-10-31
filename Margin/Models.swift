@@ -76,6 +76,9 @@ struct Element: Codable, Identifiable, Hashable {
     var cover: String? // "redact" or "whiteout": hides what's beneath, on screen and in exports
     var stamp = false
     var comment: String?
+    var italic = false
+    var underline = false
+    var align: String? // "center" or "right"; nil is left
 
     var inset: CGFloat { fillHex == nil && !stamp ? 0 : 10 }
     var isBlank: Bool { text.isEmpty && imageFile == nil && !isTape && cover == nil && fillHex == nil && comment == nil }
@@ -153,6 +156,11 @@ struct Note: Codable, Identifiable, Hashable {
     var flashcards: [Flashcard] = []
     var excerpts: [Excerpt] = []
     var isTemplate = false
+    var boardWidth: CGFloat? // a whiteboard is wider than a page, and grows
+    var coverHex: String?
+
+    var width: CGFloat { boardWidth ?? NoteLayout.width }
+    static let boardSize = CGSize(width: NoteLayout.width * 6, height: NoteLayout.paperHeight * 6)
 }
 
 // Saved notes must survive app updates: a field added later falls back to its default, so
@@ -174,6 +182,7 @@ extension Page {
         pdfPage = c.value(.pdfPage, nil)
         backgroundFile = c.value(.backgroundFile, nil)
         bookmarked = c.value(.bookmarked, false)
+        endless = c.value(.endless, nil)
     }
 }
 
@@ -195,6 +204,9 @@ extension Element {
         cover = c.value(.cover, nil)
         stamp = c.value(.stamp, false)
         comment = c.value(.comment, nil)
+        italic = c.value(.italic, false)
+        underline = c.value(.underline, false)
+        align = c.value(.align, nil)
     }
 }
 
@@ -217,6 +229,8 @@ extension Note {
         flashcards = c.value(.flashcards, [])
         excerpts = c.value(.excerpts, [])
         isTemplate = c.value(.isTemplate, false)
+        boardWidth = c.value(.boardWidth, nil)
+        coverHex = c.value(.coverHex, nil)
     }
 }
 
