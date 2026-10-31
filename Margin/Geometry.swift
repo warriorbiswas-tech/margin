@@ -60,6 +60,18 @@ enum SnappedShape: Equatable {
     case arrow(CGPoint, CGPoint)
 }
 
+/// Turns how far a Pencil leans into how hard it seems to press, for a Pencil that can't feel pressure.
+enum TiltPressure {
+    private static let writingAngle = 56 * CGFloat.pi / 180
+    private static let fullLean = 20 * CGFloat.pi / 180
+
+    /// A width multiplier: 1 at a normal writing angle, up to 3 leaning over and down to a third upright, at full strength.
+    static func scale(altitude: CGFloat, strength: Double) -> CGFloat {
+        let lean = max(-1, min(1, (writingAngle - altitude) / fullLean))
+        return pow(3, lean * CGFloat(strength))
+    }
+}
+
 enum ShapeSnap {
     static func recognize(_ points: [CGPoint]) -> SnappedShape? {
         guard points.count >= 3, let first = points.first, let last = points.last else { return nil }

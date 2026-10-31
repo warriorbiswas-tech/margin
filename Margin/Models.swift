@@ -261,6 +261,8 @@ enum Prefs {
     static var snapHighlights: Bool { d.bool(forKey: "snapHighlights") }
     static var scribbleErase: Bool { d.object(forKey: "scribbleErase") as? Bool ?? true }
     static var holdForShapes: Bool { d.object(forKey: "holdForShapes") as? Bool ?? true }
+    static var tiltPressure: Bool { d.bool(forKey: "tiltPressure") }
+    static var tiltStrength: Double { d.object(forKey: "tiltStrength") as? Double ?? 0.6 }
     static var eraserReturns: Bool { d.object(forKey: "eraserReturns") as? Bool ?? true }
     static var liveTranscribe: Bool { d.object(forKey: "liveTranscribe") as? Bool ?? true }
 

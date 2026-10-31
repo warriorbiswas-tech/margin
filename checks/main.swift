@@ -190,6 +190,13 @@ check(TextTools.withoutLaTeX("x \\rightarrow y") == "x → y", "a longer command
 check(TextTools.withoutLaTeX("It costs $5 and $6 today.") == "It costs $5 and $6 today.", "money stays")
 check(TextTools.withoutLaTeX("$x^{2} = 4$") == "x^2 = 4", "inline math loses its dollars")
 
+// Tilt for pressure
+let degrees = CGFloat.pi / 180
+check(abs(TiltPressure.scale(altitude: 56 * degrees, strength: 1) - 1) < 0.001, "a normal writing angle keeps the pen's width")
+check(abs(TiltPressure.scale(altitude: 20 * degrees, strength: 1) - 3) < 0.001, "leaning over thickens the line, up to a limit")
+check(abs(TiltPressure.scale(altitude: 90 * degrees, strength: 1) - 1 / 3) < 0.001, "upright thins it, down to a limit")
+check(TiltPressure.scale(altitude: 40 * degrees, strength: 0.3) < TiltPressure.scale(altitude: 40 * degrees, strength: 1), "strength sets how much it changes")
+
 // Undo and redo
 var history = History<Int>(limit: 3)
 check(history.undo(from: 0) == nil && !history.canUndo, "nothing to undo at first")

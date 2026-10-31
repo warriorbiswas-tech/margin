@@ -591,6 +591,8 @@ struct SettingsView: View {
     @AppStorage("liveTranscribe") private var liveTranscribe = true
     @AppStorage(SpeechLanguage.key) private var speechLanguage = "en"
     @AppStorage("eraserReturns") private var eraserReturns = true
+    @AppStorage("tiltPressure") private var tiltPressure = false
+    @AppStorage("tiltStrength") private var tiltStrength = 0.6
     @AppStorage("theme") private var theme = "system"
     @AppStorage("invertPages") private var invertPages = true
     @State private var folder = Sync.folderName
@@ -613,10 +615,20 @@ struct SettingsView: View {
                     Picker("Color", selection: $color) { ForEach(PaperColor.allCases) { Text($0.title).tag($0) } }
                     Picker("Size", selection: $size) { ForEach(PageSize.allCases) { Text($0.title).tag($0) } }
                 }
-                Section("Writing") {
+                Section {
                     Toggle("Scratch Out to Delete", isOn: $scribbleErase)
                     Toggle("Hold to Draw Shapes", isOn: $holdForShapes)
                     Toggle("Return to Pen After Erasing", isOn: $eraserReturns)
+                    Toggle("Tilt for Pressure", isOn: $tiltPressure)
+                    if tiltPressure {
+                        LabeledContent("Strength") {
+                            Slider(value: $tiltStrength, in: 0.2...1)
+                        }
+                    }
+                } header: {
+                    Text("Writing")
+                } footer: {
+                    if tiltPressure { Text("Lean the Pencil over for a thicker line, or hold it upright for a thinner one. The line changes when you lift the Pencil.") }
                 }
                 Section {
                     Toggle("Live Transcription", isOn: $liveTranscribe)

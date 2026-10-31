@@ -762,7 +762,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
                 }
                 if self.tool == .pen, Prefs.scribbleErase, self.scribbleErase(last) { return }
                 if self.tool == .pen, Prefs.holdForShapes, !self.snapShapes, self.snapIfHeld(last) { return }
-                if self.tool == .pen, self.snapShapes { self.snap(last) }
+                if self.tool == .pen, self.snapShapes { self.snap(last) } else if self.tool == .pen, Prefs.tiltPressure { self.applyTilt(last) }
                 if self.tool == .highlighter { self.snapHighlight(last) }
                 self.scheduleLiveText()
             }
@@ -813,6 +813,19 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             PKStrokePoint(location: p, timeOffset: Double(i) * 0.01, size: width, opacity: 1, force: 1, azimuth: 0, altitude: .pi / 2)
         }
         strokes[strokes.count - 1] = PKStroke(ink: stroke.ink, path: PKStrokePath(controlPoints: points, creationDate: stroke.path.creationDate), transform: stroke.transform)
+        setInk(PKDrawing(strokes: strokes))
+    }
+
+    /// PencilKit draws the live stroke itself and takes no say in its width, so the tilt is applied as the Pencil lifts.
+    private func applyTilt(_ stroke: PKStroke) {
+        var strokes = canvas.drawing.strokes
+        guard !penDown, lastTouchType == .pencil, strokes.last?.path.creationDate == stroke.path.creationDate else { return }
+        let strength = Prefs.tiltStrength
+        let points = stroke.path.map { p in
+            let scale = TiltPressure.scale(altitude: p.altitude, strength: strength)
+            return PKStrokePoint(location: p.location, timeOffset: p.timeOffset, size: CGSize(width: p.size.width * scale, height: p.size.height * scale), opacity: p.opacity, force: p.force, azimuth: p.azimuth, altitude: p.altitude, secondaryScale: p.secondaryScale)
+        }
+        strokes[strokes.count - 1].path = PKStrokePath(controlPoints: points, creationDate: stroke.path.creationDate)
         setInk(PKDrawing(strokes: strokes))
     }
 
