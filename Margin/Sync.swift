@@ -184,10 +184,16 @@ enum Sync {
         }
     }
 
+    /// Size and date tell a big PDF or recording is unchanged without reading it. A drawing can keep its size
+    /// through an edit, and a coarse clock can give two writes the same date, so small files are compared in full.
     private static func changed(_ a: URL, _ b: URL) -> Bool {
         let fm = FileManager.default
-        guard let first = try? fm.attributesOfItem(atPath: a.path), let second = try? fm.attributesOfItem(atPath: b.path) else { return true }
-        return first[.size] as? Int != second[.size] as? Int || first[.modificationDate] as? Date != second[.modificationDate] as? Date
+        guard let first = try? fm.attributesOfItem(atPath: a.path), let second = try? fm.attributesOfItem(atPath: b.path),
+              let size = first[.size] as? Int, size == second[.size] as? Int,
+              first[.modificationDate] as? Date == second[.modificationDate] as? Date else { return true }
+        guard size <= 4_000_000 else { return false }
+        guard let mine = try? read(a), let theirs = try? read(b) else { return true }
+        return mine != theirs
     }
 
     private static func keepCopy(of dir: URL, in local: URL) throws {
