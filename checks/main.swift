@@ -19,6 +19,26 @@ check(swapped[0] == 220 && swapped[1] == -120 && swapped[2] == 0, "swapping page
 let deleted = NoteLayout.shifts(old: old, new: [old[0], old[2]])
 check(deleted[0] == 0 && deleted[1] == nil && deleted[2] == -220, "deleting drops its ink and pulls later pages up")
 
+// Scratching out, in any direction, against writing that also turns back on itself
+func back(and turns: Int, width: CGFloat, drift: CGFloat, vertical: Bool = false, per: Int = 6) -> [CGPoint] {
+    (0...(turns * per)).map { i in
+        let t = CGFloat(i) / CGFloat(per), phase = t.truncatingRemainder(dividingBy: 2)
+        let leg = (phase < 1 ? phase : 2 - phase) * width, moved = t * drift
+        return vertical ? CGPoint(x: moved, y: leg) : CGPoint(x: leg, y: moved)
+    }
+}
+check(Scribble.isScribble(back(and: 10, width: 110, drift: 2.4)), "side to side")
+check(Scribble.isScribble(back(and: 10, width: 40, drift: 9, vertical: true)), "up and down")
+check(Scribble.isScribble(back(and: 8, width: 14, drift: 1)), "tiny and tight")
+check(Scribble.isScribble(back(and: 4, width: 90, drift: 2, per: 8)), "just a few strokes back and forth")
+check(Scribble.isScribble(back(and: 8, width: 110, drift: 3, per: 2)), "fast, with few points")
+check(!Scribble.isScribble(back(and: 3, width: 40, drift: 15, vertical: true)), "the letter W moves along")
+check(!Scribble.isScribble(back(and: 6, width: 14, drift: 12, vertical: true)), "mmmm moves along")
+let loops = (0...100).map { i -> CGPoint in let t = CGFloat(i) * 0.3; return CGPoint(x: t * 6 + cos(t) * 16, y: sin(t) * 16) }
+check(!Scribble.isScribble(loops), "loops aren't scratching")
+check(!Scribble.isScribble([CGPoint(x: 0, y: 0), CGPoint(x: 5, y: 5)]), "a dot isn't scratching")
+check(Scribble.share(of: [CGPoint(x: 1, y: 1), CGPoint(x: 50, y: 50)], in: CGRect(x: 0, y: 0, width: 10, height: 10)) == 0.5, "share of a stroke in an area")
+
 // Live Text stays where it was written
 let readLines = [CGRect(x: 90, y: 100, width: 120, height: 40), CGRect(x: 90, y: 200, width: 120, height: 40)]
 let written = [CGRect(x: 100, y: 105, width: 30, height: 30), CGRect(x: 140, y: 108, width: 40, height: 30), CGRect(x: 110, y: 210, width: 50, height: 25)]

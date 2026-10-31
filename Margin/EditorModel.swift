@@ -220,6 +220,9 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     @ObservationIgnored var liveSince = Date()
     @ObservationIgnored var liveTask: Task<Void, Never>?
     @ObservationIgnored var liveInk: CGRect?
+    /// The last stroke as the pen actually moved. PencilKit smooths fast back-and-forth strokes almost flat.
+    @ObservationIgnored var rawStroke: [CGPoint] = []
+    @ObservationIgnored var lastLiveScratch = Date.distantPast
     @ObservationIgnored var lastLiveTouch = Date.distantPast
     @ObservationIgnored var penDown = false
     var zoomPercent = 100
@@ -358,6 +361,16 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             if began { self?.lastTouchType = touch.type }
             self?.eraserTouch(touch, began: began)
             self?.liveTouch(touch, began: began)
+        }
+        trail.onPoints = { [weak self] points, began in
+            guard let self else { return }
+            if began { self.rawStroke = [] }
+            let z = max(self.canvas.zoomScale, 0.01)
+            self.rawStroke += points.map { CGPoint(x: $0.x / z, y: $0.y / z) }
+        }
+        trail.onEnd = { [weak self] touch in
+            guard let self, touch.type == .pencil else { return }
+            self.liveStrokeEnded(self.rawStroke)
         }
         canvas.addGestureRecognizer(trail)
         overlay.addInteraction(UIIndirectScribbleInteraction(delegate: liveScribble))
@@ -632,7 +645,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         restore(state)
     }
 
-    private var currentState: NoteState {
+    var currentState: NoteState {
         // A box with nothing written in it yet doesn't show, so undoing to it would look like nothing happened.
         NoteState(boardWidth: note.boardWidth, pages: note.pages, elements: note.elements.filter { !$0.isBlank }, excerpts: note.excerpts, drawing: currentDrawing)
     }
@@ -648,6 +661,11 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         if pagesChanged { rebuildPages() }
         syncElements()
         scheduleSave()
+        updateUndoButtons()
+    }
+
+    func recordBefore(_ state: NoteState) {
+        history.record(state)
         updateUndoButtons()
     }
 
@@ -734,7 +752,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         let strokes = drawing.strokes
         let added = strokes.count == lastStrokeCount + 1
         lastStrokeCount = strokes.count
-        if added, let last = strokes.last, -last.path.creationDate.timeIntervalSinceNow < 3 {
+        if added, let last = strokes.last {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.noticePencil()

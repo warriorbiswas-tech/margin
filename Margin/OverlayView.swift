@@ -4,6 +4,9 @@ import UIKit.UIGestureRecognizerSubclass
 /// Reports where a touch goes without ever claiming it, so the canvas underneath keeps working as normal.
 final class TouchTrail: UIGestureRecognizer, UIGestureRecognizerDelegate {
     var onTouch: ((UITouch, _ began: Bool) -> Void)?
+    var onEnd: ((UITouch) -> Void)?
+    /// Every position the touch reported, including those between screen refreshes.
+    var onPoints: (([CGPoint], _ began: Bool) -> Void)?
 
     override init(target: Any?, action: Selector?) {
         super.init(target: target, action: action)
@@ -13,15 +16,23 @@ final class TouchTrail: UIGestureRecognizer, UIGestureRecognizerDelegate {
         delegate = self
     }
 
+    private func report(_ touch: UITouch, _ event: UIEvent, began: Bool) {
+        onTouch?(touch, began)
+        onPoints?((event.coalescedTouches(for: touch) ?? [touch]).map { $0.location(in: view) }, began)
+    }
+
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let touch = touches.first { onTouch?(touch, true) }
+        if let touch = touches.first { report(touch, event, began: true) }
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let touch = touches.first { onTouch?(touch, false) }
+        if let touch = touches.first { report(touch, event, began: false) }
     }
 
-    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) { state = .failed }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let touch = touches.first { onEnd?(touch) }
+        state = .failed
+    }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { state = .failed }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
@@ -391,7 +402,7 @@ final class OverlayView: UIView, UIGestureRecognizerDelegate, UITextViewDelegate
         }
         if firstWords || model.scribbleActive {
             model.fitLiveBox(id, toInk: firstWords)
-            styleDidChange()
+            if self.editor != nil { styleDidChange() }
         }
         refreshSelection()
     }

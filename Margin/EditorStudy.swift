@@ -52,19 +52,47 @@ extension EditorModel {
 
     func scribbleErase(_ stroke: PKStroke) -> Bool {
         let strokes = canvas.drawing.strokes
+        let raw = rawStroke
+        rawStroke = []
+        // Evenly spaced points, because a quick scratch has few control points and they fall anywhere along it.
         guard strokes.last?.path.creationDate == stroke.path.creationDate,
-              Scribble.isScribble(stroke.path.map(\.location)) else { return false }
-        let area = stroke.renderBounds
-        let kept = strokes.dropLast().filter { !$0.renderBounds.intersects(area) }
-        let edits = textEdits(crossing: area)
-        guard kept.count < strokes.count - 1 || !edits.isEmpty else { return false } // covered nothing, so it's just a mark
+              Scribble.isScribble(raw) || Scribble.isScribble(samples(of: stroke)) else { return false }
+        let moved = raw.reduce(stroke.renderBounds) { $0.union(CGRect(origin: $1, size: .zero)) }
+        return eraseCovered(by: moved, in: Array(strokes.dropLast()))
+    }
 
-        setInk(PKDrawing(strokes: Array(kept)))
+    private func samples(of stroke: PKStroke) -> [CGPoint] {
+        stroke.path.interpolatedPoints(by: .distance(3)).map { $0.location.applying(stroke.transform) }
+    }
+
+    /// A word-sized stroke goes if the scratch touches it. A longer one goes only if a good part of it is covered,
+    /// so scratching out a word leaves the underline or bracket beside it.
+    private func eraseCovered(by area: CGRect, in strokes: [PKStroke]) -> Bool {
+        let kept = strokes.filter { stroke in
+            let bounds = stroke.renderBounds
+            guard bounds.intersects(area) else { return true }
+            let share = Scribble.share(of: samples(of: stroke), in: area)
+            let wordSized = max(bounds.width, bounds.height) <= max(max(area.width, area.height) * 3, 150)
+            return wordSized ? share == 0 : share < 0.25
+        }
+        let edits = textEdits(crossing: area)
+        guard kept.count < strokes.count || !edits.isEmpty else { return false } // covered nothing, so it's just a mark
+        setInk(PKDrawing(strokes: kept))
         apply(edits)
-        liveSince = max(liveSince, stroke.path.creationDate)
         syncElements()
         scheduleSave()
         return true
+    }
+
+    /// Under Live Text the Pencil's strokes go to Scribble and never become ink, so a scratch is read from the touches.
+    func liveStrokeEnded(_ points: [CGPoint]) {
+        guard scribbleActive, Prefs.scribbleErase, Scribble.isScribble(points) else { return }
+        let area = points.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: .zero)) }.insetBy(dx: -3, dy: -3)
+        overlay.commitEditing()
+        let before = currentState
+        guard eraseCovered(by: area, in: canvas.drawing.strokes) else { return }
+        recordBefore(before)
+        lastLiveScratch = Date()
     }
 
     /// Reading a page's words takes long enough to catch the next stroke, so it happens off the main thread.
@@ -539,6 +567,12 @@ extension EditorModel {
     /// Scribble's words have landed in a new box, so it can take on the place and size of the writing they came from.
     func fitLiveBox(_ id: UUID, toInk: Bool = true) {
         defer { liveInk = nil }
+        // Scribble can read a scratch as letters, and they shouldn't appear where something was just erased.
+        if toInk, Date().timeIntervalSince(lastLiveScratch) < 2 {
+            overlay.cancelEditing()
+            removeElement(id)
+            return
+        }
         guard let i = note.elements.firstIndex(where: { $0.id == id }), !note.elements[i].text.isEmpty else { return }
         guard toInk else {
             // More words written into a box. It grows along its line, keeping its place and size.

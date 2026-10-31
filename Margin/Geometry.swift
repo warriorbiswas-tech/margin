@@ -324,24 +324,52 @@ enum Calc {
     }
 }
 
+/// Scratching something out is a stroke that keeps going back over itself, in any direction.
+/// Writing moves on as it goes, so it covers new ground with each turn.
 enum Scribble {
     static func isScribble(_ points: [CGPoint]) -> Bool {
-        guard points.count >= 12, var extreme = points.first?.x else { return false }
-        var direction: CGFloat = 0, reversals = 0
-        for p in points {
-            let delta = p.x - extreme
-            if direction == 0 {
-                if abs(delta) > 6 { direction = delta > 0 ? 1 : -1; extreme = p.x }
-            } else if delta * direction > 0 {
-                extreme = p.x
-            } else if abs(delta) > 6 {
-                reversals += 1
-                direction = -direction
-                extreme = p.x
+        guard points.count >= 6 else { return false }
+        // The direction most of the stroke runs along. Doubling the angles lets opposite directions count as one.
+        var cosine: CGFloat = 0, sine: CGFloat = 0, length: CGFloat = 0
+        for (a, b) in zip(points, points.dropFirst()) {
+            let dx = b.x - a.x, dy = b.y - a.y, size = hypot(dx, dy)
+            guard size > 0 else { continue }
+            cosine += (dx * dx - dy * dy) / size
+            sine += 2 * dx * dy / size
+            length += size
+        }
+        // Loops run every way equally, so they have no direction to go back and forth in.
+        guard length > 0, hypot(cosine, sine) / length >= 0.5 else { return false }
+        let angle = atan2(sine, cosine) / 2, ax = cos(angle), ay = sin(angle)
+        let along = points.map { $0.x * ax + $0.y * ay }, across = points.map { $0.y * ax - $0.x * ay }
+        let reach = along.max()! - along.min()!, spread = across.max()! - across.min()!
+        guard reach >= 8 else { return false }
+
+        var extreme = along[0], heading: CGFloat = 0, turns = 0
+        let slack = max(reach * 0.3, 3)
+        for value in along {
+            let moved = value - extreme
+            if heading == 0 {
+                if abs(moved) > slack {
+                    heading = moved > 0 ? 1 : -1
+                    extreme = value
+                }
+            } else if moved * heading > 0 {
+                extreme = value
+            } else if abs(moved) > slack {
+                turns += 1
+                heading = -heading
+                extreme = value
             }
         }
-        let xs = points.map(\.x)
-        return reversals >= 5 && (xs.max()! - xs.min()!) > 24
+        // Letters like M and W turn back too, but scratching travels several times the size of the patch it covers.
+        return turns >= 3 && length / hypot(reach, spread) >= 3.4
+    }
+
+    /// How much of a stroke lies inside an area, from 0 to 1.
+    static func share(of points: [CGPoint], in area: CGRect) -> CGFloat {
+        guard !points.isEmpty else { return 0 }
+        return CGFloat(points.filter(area.contains).count) / CGFloat(points.count)
     }
 }
 
