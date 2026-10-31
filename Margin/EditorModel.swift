@@ -175,11 +175,13 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     var tool: Tool = .pen {
         didSet {
             guard tool != oldValue else { return }
+            previousTool = oldValue
             if tool == .eraser, oldValue == .pen || oldValue == .highlighter { toolBeforeEraser = oldValue }
             applyTool()
         }
     }
     @ObservationIgnored var toolBeforeEraser = Tool.pen
+    @ObservationIgnored private var previousTool = Tool.pen
     var highlightMark = HighlightMark.highlight
     var annotateKind = AnnotateKind.arrow
     var annotateColor = UIColor(hex: "E5484D")
@@ -225,6 +227,8 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     @ObservationIgnored var lastLiveScratch = Date.distantPast
     @ObservationIgnored var lastLiveTouch = Date.distantPast
     @ObservationIgnored var penDown = false
+    /// How long the pen rested before lifting from the main canvas, for holding to draw a shape.
+    @ObservationIgnored var lastHold: TimeInterval = 0
     var zoomPercent = 100
     var currentPage = 1
     var darkPages = false {
@@ -358,7 +362,10 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         liveScribble.model = self
         let trail = TouchTrail(target: nil, action: nil)
         trail.onTouch = { [weak self] touch, began in
-            if began { self?.lastTouchType = touch.type }
+            if began {
+                self?.lastTouchType = touch.type
+                self?.lastHold = 0
+            }
             self?.eraserTouch(touch, began: began)
             self?.liveTouch(touch, began: began)
         }
@@ -368,8 +375,10 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
             let z = max(self.canvas.zoomScale, 0.01)
             self.rawStroke += points.map { CGPoint(x: $0.x / z, y: $0.y / z) }
         }
-        trail.onEnd = { [weak self] touch in
-            guard let self, touch.type == .pencil else { return }
+        trail.onEnd = { [weak self, weak trail] touch in
+            guard let self else { return }
+            self.lastHold = trail?.heldAtEnd ?? 0
+            guard touch.type == .pencil else { return }
             self.liveStrokeEnded(self.rawStroke)
         }
         canvas.addGestureRecognizer(trail)
@@ -607,9 +616,13 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         zoomCanvas.drawingPolicy = canvas.drawingPolicy
     }
 
+    /// Follows the double-tap choice in Settings › Apple Pencil, and always comes back to the tool you were writing with.
     func pencilInteractionDidTap(_ interaction: UIPencilInteraction) {
-        guard UIPencilInteraction.preferredTapAction != .ignore else { return }
-        tool = tool == .eraser ? .pen : .eraser
+        switch UIPencilInteraction.preferredTapAction {
+        case .ignore: break
+        case .switchPrevious: tool = previousTool
+        default: tool = tool == .eraser ? toolBeforeEraser : .eraser
+        }
     }
 
     @available(iOS 17.5, *)
@@ -755,13 +768,16 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         if added, let last = strokes.last {
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
+                // Taken once, so a stroke in the writing window can't inherit a hold from the page.
+                let held = self.lastHold
+                self.lastHold = 0
                 self.noticePencil()
                 if self.tool == .pen, self.penStyle == .dashed {
                     self.cutIntoDashes(last)
                     return
                 }
                 if self.tool == .pen, Prefs.scribbleErase, self.scribbleErase(last) { return }
-                if self.tool == .pen, Prefs.holdForShapes, !self.snapShapes, self.snapIfHeld(last) { return }
+                if self.tool == .pen, Prefs.holdForShapes, !self.snapShapes, self.snapIfHeld(last, held: held) { return }
                 if self.tool == .pen, self.snapShapes { self.snap(last) } else if self.tool == .pen, Prefs.tiltPressure { self.applyTilt(last) }
                 if self.tool == .highlighter { self.snapHighlight(last) }
                 self.scheduleLiveText()
@@ -772,9 +788,10 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     }
 
     /// Finishing a stroke and holding still turns it into a clean shape. Returns true if it did.
-    private func snapIfHeld(_ stroke: PKStroke) -> Bool {
+    private func snapIfHeld(_ stroke: PKStroke, held: TimeInterval) -> Bool {
         let points = stroke.path.map { (location: $0.location, time: $0.timeOffset) }
-        guard ShapeSnap.heldAtEnd(points), ShapeSnap.recognize(stroke.path.map(\.location)) != nil else { return false }
+        guard held >= ShapeSnap.holdSeconds || ShapeSnap.heldAtEnd(points),
+              ShapeSnap.recognize(stroke.path.map(\.location)) != nil else { return false }
         snap(stroke)
         liveSince = max(liveSince, stroke.path.creationDate)
         return true

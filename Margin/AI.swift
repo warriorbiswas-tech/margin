@@ -233,9 +233,9 @@ enum AskMode: String, CaseIterable, Identifiable {
     }
     var instruction: String {
         switch self {
-        case .explain: "Explain this clearly and simply, as a patient tutor would, with one short example."
-        case .define: "List the key terms in this, each with a one-sentence definition."
-        case .steps: "Work through this problem in short numbered steps, then give the final answer on its own line."
+        case .explain: "Explain this thoroughly, as a patient tutor would: what it means, why it works or why it matters, the key ideas and terms behind it, one worked example, and a common mistake to avoid. Use short headings or bullets where they help."
+        case .define: "List every key term in this. For each, give a precise definition, then a short example or how it's used here."
+        case .steps: "Work through this problem in numbered steps, saying what each step does and why. Check the result, then give the final answer on its own line."
         }
     }
 }
@@ -340,8 +340,8 @@ enum AI {
     static func summary(of text: String, using digester: Digester? = nil, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
         let notes = try await digest(text, using: digester)
         // This model ignores a requested length but keeps to a count of bullets.
-        let bullets = min(max(notes.count / 500, 5), 30)
-        return try await complete(system: "Summarize study notes as at most \(bullets) short bullet points, one line each, grouped by topic. Keep only the main ideas and the definitions and numbers they depend on, in your own words. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
+        let bullets = min(max(notes.count / 400, 6), 36)
+        return try await complete(system: "Summarize study notes as at most \(bullets) bullet points grouped under short topic headings. Each bullet is one complete sentence that keeps the fact, definition, number or example it depends on. Cover every main idea, in your own words. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", maxTokens: 1600, onPartial: onPartial)
     }
 
     static func flashcards(from text: String, count: Int = 10, using digester: Digester? = nil) async throws -> [(front: String, back: String)] {
@@ -391,11 +391,11 @@ enum AI {
 
     /// `context` is the handful of passages picked for the question, labelled so answers can name their page.
     static func chatSystem(context: String) -> String {
-        "You answer questions using only the passages from the user's notes. Only if a passage starts with a label like \"Page 12:\", name that page in the answer, and never make up a page number. If the passages don't contain the answer, say so plainly instead of guessing. Be concise. \(plainMath) \(notesRule)\n\n<notes>\n\(context)\n</notes>"
+        "You are a study assistant answering questions about the user's notes. Start with the direct answer in a sentence or two, then explain it in full: the reasoning, and the definitions, numbers, steps and examples from the passages that support it, with short headings or bullets where they make it easier to read. Only if a passage starts with a label like \"Page 12:\", name that page where you use it, and never make up a page number. If the passages don't cover the question, say so plainly; you may then add well-established background knowledge, marked as not from their notes. Be specific and accurate rather than general. \(plainMath) \(notesRule)\n\n<notes>\n\(context)\n</notes>"
     }
 
     static func ask(_ mode: AskMode, about text: String, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
-        try await complete(system: "\(mode.instruction) \(plainMath) \(notesRule)", prompt: "<notes>\n\(String(text.prefix(chunkCharacters)))\n</notes>", maxTokens: 800, onPartial: onPartial)
+        try await complete(system: "\(mode.instruction) \(plainMath) \(notesRule)", prompt: "<notes>\n\(String(text.prefix(chunkCharacters)))\n</notes>", maxTokens: 1200, onPartial: onPartial)
     }
 
     /// The Feynman technique: explaining a topic in your own words shows where your understanding runs out.

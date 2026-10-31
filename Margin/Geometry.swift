@@ -152,8 +152,10 @@ enum ShapeSnap {
         return simplify(Array(points[...farthest]), tolerance: tolerance).dropLast() + simplify(Array(points[farthest...]), tolerance: tolerance)
     }
 
+    static let holdSeconds: TimeInterval = 0.45
+
     /// True when the pen stayed put at the end of a stroke for at least `seconds`.
-    static func heldAtEnd(_ points: [(location: CGPoint, time: TimeInterval)], seconds: TimeInterval = 0.45, tolerance: CGFloat = 5) -> Bool {
+    static func heldAtEnd(_ points: [(location: CGPoint, time: TimeInterval)], seconds: TimeInterval = ShapeSnap.holdSeconds, tolerance: CGFloat = 5) -> Bool {
         guard points.count >= 2, let end = points.last else { return false }
         let lastMove = points.last { dist($0.location, end.location) > tolerance }?.time ?? points[0].time
         return end.time - lastMove >= seconds
