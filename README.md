@@ -23,7 +23,7 @@ Nothing is sent to a server. Open-source models download once from Hugging Face,
 
 Open `Margin.xcodeproj` in Xcode and run on an iPad with iPadOS 17 or later. The engines in `Vendor/` have no Simulator slice, so AI features are unavailable there and everything else works.
 
-Without a Mac: every push to `main` builds an unsigned `Margin.ipa`. Open the latest run under Actions › Build and download it from Artifacts, then install it with [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io) from a Windows PC or Mac, signing in with your Apple ID. With a free Apple ID the app has to be reinstalled every 7 days.
+Without a Mac: every push to `main` builds an unsigned `Margin.ipa`. Open the latest run under Actions › Build, download `Margin-ipa` from Artifacts and unzip it, then install `Margin.ipa` with [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io) from a Windows PC or Mac, signing in with your Apple ID. With a free Apple ID the app has to be reinstalled every 7 days.
 
 ## Checks
 
