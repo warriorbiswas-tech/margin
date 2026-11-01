@@ -29,7 +29,11 @@ Open `Margin.xcodeproj` in Xcode and run on an iPad with iPadOS 17 or later. The
 swiftc Margin/Geometry.swift checks/main.swift -o /tmp/margin-check && /tmp/margin-check
 swiftc Margin/Sync.swift checks/sync/main.swift -o /tmp/sync-check && /tmp/sync-check
 checks/run-engines.sh <models folder> <work folder>
+clang -fsanitize=address,undefined -F Vendor/macos Margin/LlamaEngine.c checks/bridge/fake-llama.c checks/bridge/main.c -o /tmp/bridge && /tmp/bridge
+clang -c -fsanitize=thread checks/assistant/engine.c -o /tmp/engine.o && swiftc -sanitize=thread -import-objc-header checks/assistant/engine.h Margin/Geometry.swift Margin/AI.swift checks/assistant/main.swift /tmp/engine.o -o /tmp/assistant && /tmp/assistant
 swiftc -O Margin/Geometry.swift Margin/Sync.swift checks/stress/main.swift -o /tmp/margin-stress && /tmp/margin-stress
 ```
+
+`bridge` runs the app's llama.cpp bridge against a fake llama.cpp under the address and undefined-behaviour sanitizers, checking its buffers, prompt cache, stopping and refusals. `assistant` runs the assistant's Swift code against a stand-in engine under the thread sanitizer: streaming, stopping, leaving the screen, many questions at once, long notes and structured answers.
 
 `run-engines.sh` runs the real AI code against the real models on a Mac. The stress test throws random input at everything that runs without a screen, then has three devices edit, trash, delete and sync at random, and fails if they don't end up with the same notes or if any edit is lost. It takes about a minute; it prints its seed, and passing that seed back replays the same random input.

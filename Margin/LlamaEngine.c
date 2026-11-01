@@ -36,10 +36,19 @@ margin_llm *margin_llm_open(const char *model_path, int32_t context_tokens, int3
         return NULL;
     }
 
+    // Sized by the context llama.cpp actually made, which can be larger than the one asked for.
+    llama_token *evaluated = malloc(sizeof(llama_token) * llama_n_ctx(context));
     margin_llm *llm = malloc(sizeof(margin_llm));
+    if (!llm || !evaluated) {
+        free(llm);
+        free(evaluated);
+        llama_free(context);
+        llama_model_free(model);
+        return NULL;
+    }
     llm->model = model;
     llm->context = context;
-    llm->evaluated = malloc(sizeof(llama_token) * (size_t)context_tokens);
+    llm->evaluated = evaluated;
     llm->evaluated_count = 0;
     return llm;
 }
@@ -54,6 +63,7 @@ void margin_llm_close(margin_llm *llm) {
 
 static char *apply_template(const struct llama_model *model, const char *const *roles, const char *const *contents, int32_t count) {
     struct llama_chat_message *messages = malloc(sizeof(struct llama_chat_message) * (size_t)count);
+    if (!messages) return NULL;
     size_t total = 64;
     for (int32_t i = 0; i < count; i++) {
         messages[i].role = roles[i];
@@ -63,11 +73,16 @@ static char *apply_template(const struct llama_model *model, const char *const *
     const char *template = llama_model_chat_template(model, NULL);
     int32_t capacity = (int32_t)total * 2;
     char *prompt = malloc((size_t)capacity);
-    int32_t length = llama_chat_apply_template(template, messages, (size_t)count, true, prompt, capacity);
+    int32_t length = prompt ? llama_chat_apply_template(template, messages, (size_t)count, true, prompt, capacity) : -1;
     if (length > capacity) {
         capacity = length + 1;
-        prompt = realloc(prompt, (size_t)capacity);
-        length = llama_chat_apply_template(template, messages, (size_t)count, true, prompt, capacity);
+        char *larger = realloc(prompt, (size_t)capacity);
+        if (larger) {
+            prompt = larger;
+            length = llama_chat_apply_template(template, messages, (size_t)count, true, prompt, capacity);
+        } else {
+            length = -1;
+        }
     }
     free(messages);
     if (length < 0) {
@@ -77,9 +92,13 @@ static char *apply_template(const struct llama_model *model, const char *const *
     // Opens the answer past this model's reasoning block. Left to itself it can start the block and never close
     // it, and the reasoning is slow on a tablet without making short answers any better.
     static const char skip_reasoning[] = "<think>\n\n</think>\n\n";
-    prompt = realloc(prompt, (size_t)length + sizeof(skip_reasoning));
-    memcpy(prompt + length, skip_reasoning, sizeof(skip_reasoning));
-    return prompt;
+    char *opened = realloc(prompt, (size_t)length + sizeof(skip_reasoning));
+    if (!opened) {
+        free(prompt);
+        return NULL;
+    }
+    memcpy(opened + length, skip_reasoning, sizeof(skip_reasoning));
+    return opened;
 }
 
 static struct llama_sampler *make_sampler(const struct llama_vocab *vocab, float temperature, const char *grammar) {
@@ -120,6 +139,10 @@ int32_t margin_llm_generate(margin_llm *llm,
         return margin_error_prompt;
     }
     llama_token *tokens = malloc(sizeof(llama_token) * (size_t)token_count);
+    if (!tokens) {
+        free(prompt);
+        return margin_error_prompt;
+    }
     int32_t written = llama_tokenize(vocab, prompt, prompt_length, tokens, token_count, add_bos, true);
     free(prompt);
     if (written < 0) {

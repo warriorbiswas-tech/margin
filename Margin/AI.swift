@@ -79,10 +79,17 @@ final class LocalLLM: @unchecked Sendable {
 
     private final class Run: @unchecked Sendable {
         var bytes = Data()
-        var cancelled = false
         var nextPartial = Date.distantPast
         let onPartial: (@Sendable (String) -> Void)?
+        private let lock = NSLock()
+        private var stopped = false
         init(onPartial: (@Sendable (String) -> Void)?) { self.onPartial = onPartial }
+
+        /// Set from any thread, and read by the model's thread before every token.
+        var cancelled: Bool {
+            get { lock.withLock { stopped } }
+            set { lock.withLock { stopped = newValue } }
+        }
     }
 
     /// Frees the model's memory; it reloads on the next request. Never waits, because loading the model
