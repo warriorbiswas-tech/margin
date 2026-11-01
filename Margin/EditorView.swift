@@ -669,7 +669,7 @@ struct EditorView: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 240)
-                    Toggle("Return to Pen After Erasing", isOn: $eraserReturns).fixedSize()
+                    Toggle("Switch Back After Erasing", isOn: $eraserReturns).fixedSize()
                 case .lasso:
                     hint("Circle ink to move it. Tap the selection to copy or delete.")
                 case .text:

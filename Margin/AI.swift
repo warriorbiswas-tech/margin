@@ -79,10 +79,17 @@ final class LocalLLM: @unchecked Sendable {
 
     private final class Run: @unchecked Sendable {
         var bytes = Data()
-        var cancelled = false
         var nextPartial = Date.distantPast
         let onPartial: (@Sendable (String) -> Void)?
+        private let lock = NSLock()
+        private var stopped = false
         init(onPartial: (@Sendable (String) -> Void)?) { self.onPartial = onPartial }
+
+        /// Set from any thread, and read by the model's thread before every token.
+        var cancelled: Bool {
+            get { lock.withLock { stopped } }
+            set { lock.withLock { stopped = newValue } }
+        }
     }
 
     /// Frees the model's memory; it reloads on the next request. Never waits, because loading the model
@@ -341,7 +348,7 @@ enum AI {
         let notes = try await digest(text, using: digester)
         // This model ignores a requested length but keeps to a count of bullets.
         let bullets = min(max(notes.count / 300, 6), 40)
-        let summary = try await complete(system: "Summarize study notes as at most \(bullets) bullet points grouped by topic, each point once. Each bullet states one specific point in a complete sentence, with the definition, mechanism, formula or exact value it depends on, taken from the notes. Don't add anything the notes don't say. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
+        let summary = try await complete(system: "Summarize study notes as at most \(bullets) bullet points grouped by topic, each point once. Each bullet states one specific point in a complete sentence, with the definition, mechanism, formula or exact value it depends on, taken from the notes. Don't add anything the notes don't say. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", maxTokens: 1600, onPartial: onPartial)
         return TextTools.withoutCutOffLine(summary)
     }
 
@@ -396,7 +403,7 @@ enum AI {
     }
 
     static func ask(_ mode: AskMode, about text: String, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
-        try await complete(system: "\(mode.instruction) \(plainMath) \(notesRule)", prompt: "<notes>\n\(String(text.prefix(chunkCharacters)))\n</notes>", maxTokens: 800, onPartial: onPartial)
+        try await complete(system: "\(mode.instruction) \(plainMath) \(notesRule)", prompt: "<notes>\n\(String(text.prefix(chunkCharacters)))\n</notes>", maxTokens: 1200, onPartial: onPartial)
     }
 
     /// The Feynman technique: explaining a topic in your own words shows where your understanding runs out.

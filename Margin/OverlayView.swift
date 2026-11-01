@@ -2,11 +2,19 @@ import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
 /// Reports where a touch goes without ever claiming it, so the canvas underneath keeps working as normal.
+/// It follows one touch at a time, and a Pencil always wins over a hand resting on the screen.
 final class TouchTrail: UIGestureRecognizer, UIGestureRecognizerDelegate {
     var onTouch: ((UITouch, _ began: Bool) -> Void)?
     var onEnd: ((UITouch) -> Void)?
     /// Every position the touch reported, including those between screen refreshes.
     var onPoints: (([CGPoint], _ began: Bool) -> Void)?
+    /// How long the last touch stayed in one place before it lifted. A Pencil held still sends few or no
+    /// samples, so the stroke's own timing can't show a pause; the lift's timestamp can.
+    private(set) var heldAtEnd: TimeInterval = 0
+    private weak var followed: UITouch?
+    private var down = Set<ObjectIdentifier>()
+    private var anchor = CGPoint.zero
+    private var stillSince: TimeInterval = 0
 
     override init(target: Any?, action: Selector?) {
         super.init(target: target, action: action)
@@ -17,23 +25,61 @@ final class TouchTrail: UIGestureRecognizer, UIGestureRecognizerDelegate {
     }
 
     private func report(_ touch: UITouch, _ event: UIEvent, began: Bool) {
+        let samples = event.coalescedTouches(for: touch) ?? [touch]
+        if began {
+            heldAtEnd = 0
+            anchor = touch.location(in: nil)
+            stillSince = touch.timestamp
+        }
+        // Measured on screen, so holding still means the same at any zoom.
+        for sample in samples {
+            let p = sample.location(in: nil)
+            if hypot(p.x - anchor.x, p.y - anchor.y) > 4 {
+                anchor = p
+                stillSince = sample.timestamp
+            }
+        }
         onTouch?(touch, began)
-        onPoints?((event.coalescedTouches(for: touch) ?? [touch]).map { $0.location(in: view) }, began)
+        onPoints?(samples.map { $0.location(in: view) }, began)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let touch = touches.first { report(touch, event, began: true) }
+        down.formUnion(touches.map(ObjectIdentifier.init))
+        guard let touch = touches.first(where: { $0.type == .pencil }) ?? (followed == nil ? touches.first : nil) else { return }
+        followed = touch
+        report(touch, event, began: true)
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let touch = touches.first { report(touch, event, began: false) }
+        if let touch = followed, touches.contains(touch) { report(touch, event, began: false) }
     }
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let touch = touches.first { onEnd?(touch) }
-        state = .failed
+        if let touch = followed, touches.contains(touch) {
+            followed = nil
+            heldAtEnd = touch.timestamp - stillSince
+            onEnd?(touch)
+        }
+        lift(touches)
     }
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) { state = .failed }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+        if let touch = followed, touches.contains(touch) { followed = nil }
+        lift(touches)
+    }
+
+    /// Failing ends this recognizer's view of every touch still down, so it waits until the hand lifts too.
+    /// Otherwise a palm resting on the page would hide every stroke after the first.
+    private func lift(_ touches: Set<UITouch>) {
+        down.subtract(touches.map(ObjectIdentifier.init))
+        if down.isEmpty { state = .failed }
+    }
+
+    override func reset() {
+        super.reset()
+        followed = nil
+        down.removeAll()
+    }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
 }

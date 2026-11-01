@@ -18,6 +18,10 @@ margin_whisper *margin_whisper_open(const char *model_path) {
     struct whisper_context *context = whisper_init_from_file_with_params(model_path, params);
     if (!context) return NULL;
     margin_whisper *whisper = malloc(sizeof(margin_whisper));
+    if (!whisper) {
+        whisper_free(context);
+        return NULL;
+    }
     whisper->context = context;
     return whisper;
 }

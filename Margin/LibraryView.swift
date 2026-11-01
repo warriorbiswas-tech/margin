@@ -618,7 +618,7 @@ struct SettingsView: View {
                 Section {
                     Toggle("Scratch Out to Delete", isOn: $scribbleErase)
                     Toggle("Hold to Draw Shapes", isOn: $holdForShapes)
-                    Toggle("Return to Pen After Erasing", isOn: $eraserReturns)
+                    Toggle("Switch Back After Erasing", isOn: $eraserReturns)
                     Toggle("Tilt for Pressure", isOn: $tiltPressure)
                     if tiltPressure {
                         LabeledContent("Strength") {
