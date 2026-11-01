@@ -7,28 +7,41 @@ on:
 
 jobs:
   app:
-    name: App
+    name: App (${{ matrix.name }})
     runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: iPad, Debug
+            sdk: iphoneos
+            configuration: Debug
+          - name: iPad, Release
+            sdk: iphoneos
+            configuration: Release
+          - name: Simulator
+            sdk: iphonesimulator
+            configuration: Debug
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Select Xcode
         run: |
           sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
           xcodebuild -version
-      - name: Build for iPad
+      - name: Build
         run: |
           xcodebuild build \
             -project Margin.xcodeproj \
             -target Margin \
-            -sdk iphoneos \
-            -configuration Debug \
+            -sdk ${{ matrix.sdk }} \
+            -configuration ${{ matrix.configuration }} \
             CODE_SIGNING_ALLOWED=NO
 
   checks:
     name: Checks
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Select Xcode
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
       - name: Geometry
