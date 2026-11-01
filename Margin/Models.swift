@@ -2,7 +2,7 @@ import Foundation
 import UIKit
 
 enum PaperColor: String, Codable, CaseIterable, Identifiable {
-    case white, cream, gray, dark
+    case white, cream, yellow, blue, green, gray, dark
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
     /// Dark pages swap the paper: light sheets go dark, and the dark sheet goes light.
@@ -10,10 +10,16 @@ enum PaperColor: String, Codable, CaseIterable, Identifiable {
         switch (self, dark) {
         case (.white, false): .white
         case (.cream, false): UIColor(hex: "FBF6E9")
+        case (.yellow, false): UIColor(hex: "FFF6C7")
+        case (.blue, false): UIColor(hex: "EAF1F8")
+        case (.green, false): UIColor(hex: "EDF3EA")
         case (.gray, false): UIColor(hex: "E9EAEC")
         case (.dark, false): UIColor(hex: "1F2125")
         case (.white, true): UIColor(hex: "1C1C1E")
         case (.cream, true): UIColor(hex: "221F18")
+        case (.yellow, true): UIColor(hex: "29261A")
+        case (.blue, true): UIColor(hex: "1B2129")
+        case (.green, true): UIColor(hex: "1C231E")
         case (.gray, true): UIColor(hex: "2B2C30")
         case (.dark, true): UIColor(hex: "F5F5F2")
         }

@@ -352,6 +352,12 @@ enum AI {
         return TextTools.withoutCutOffLine(summary)
     }
 
+    static func keyPoints(of text: String, using digester: Digester? = nil, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
+        let notes = try await digest(text, using: digester)
+        let points = try await complete(system: "Read these notes and write two short lists. First a line \"Key points\" followed by at most 8 bullet points, each one specific point in a complete sentence. Then a line \"Action items\" followed by every task, decision or follow-up the notes mention, one per line starting with \"☐ \", including who and when if the notes say so, or \"None\" if there are none. Use only what the notes say. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", maxTokens: 1200, onPartial: onPartial)
+        return TextTools.withoutCutOffLine(points)
+    }
+
     static func flashcards(from text: String, count: Int = 10, using digester: Digester? = nil) async throws -> [(front: String, back: String)] {
         struct Card: Decodable { let front, back: String }
         let notes = try await digest(text, using: digester)

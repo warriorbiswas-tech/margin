@@ -102,12 +102,13 @@ struct AssistantSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     enum Tab: String, CaseIterable, Identifiable {
-        case chat = "Chat", summary = "Summary", cards = "Flashcards", quiz = "Quiz", map = "Mind Map", teach = "Teach Back", homework = "Homework", finish = "Finish Notes"
+        case chat = "Chat", summary = "Summary", points = "Key Points", cards = "Flashcards", quiz = "Quiz", map = "Mind Map", teach = "Teach Back", homework = "Homework", finish = "Finish Notes"
         var id: String { rawValue }
         var icon: String {
             switch self {
             case .chat: "bubble.left.and.text.bubble.right"
             case .summary: "text.alignleft"
+            case .points: "list.bullet.clipboard"
             case .cards: "rectangle.on.rectangle"
             case .quiz: "checklist"
             case .map: "point.3.connected.trianglepath.dotted"
@@ -148,6 +149,10 @@ struct AssistantSheet: View {
                     case .summary:
                         GeneratedText(button: "Summarize", insertInto: model) { partial in
                             try await AI.summary(of: try await nonEmptyText(), using: model.digester(), onPartial: partial)
+                        }
+                    case .points:
+                        GeneratedText(button: "Find Key Points", insertInto: model) { partial in
+                            try await AI.keyPoints(of: try await nonEmptyText(), using: model.digester(), onPartial: partial)
                         }
                     case .chat:
                         ChatView { question in await model.chatContext(for: question) }
