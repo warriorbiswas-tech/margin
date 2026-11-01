@@ -1,12 +1,13 @@
 import CryptoKit
 import Foundation
+import Security
 
 enum AIError: LocalizedError {
     case notInstalled, tooLong, failed, badResponse
 
     var errorDescription: String? {
         switch self {
-        case .notInstalled: "Download the writing model in Settings to use this. It runs entirely on your iPad."
+        case .notInstalled: "Add an NVIDIA key or download the writing model in Settings to use this."
         case .tooLong: "That's too much text for one request. Try a shorter selection."
         case .failed: "The on-device model stopped unexpectedly. Try again."
         case .badResponse: "The model's answer couldn't be read. Try again."
@@ -189,6 +190,89 @@ final class LocalLLM: @unchecked Sendable {
     }
 }
 
+/// The user's own NVIDIA key. It stays in this device's Keychain, out of the notes and out of sync.
+enum CloudKey {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var known: String??
+    private static var item: [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "Margin", kSecAttrAccount as String: "nvidia"]
+    }
+
+    static var stored: String? {
+        lock.withLock {
+            if let known { return known }
+            var result: CFTypeRef?
+            let status = SecItemCopyMatching(item.merging([kSecReturnData as String: true]) { $1 } as CFDictionary, &result)
+            let key = status == errSecSuccess ? (result as? Data).flatMap { String(data: $0, encoding: .utf8) } : nil
+            known = .some(key)
+            return key
+        }
+    }
+
+    static func save(_ key: String) {
+        let key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        lock.withLock {
+            SecItemDelete(item as CFDictionary)
+            if !key.isEmpty {
+                SecItemAdd(item.merging([kSecValueData as String: Data(key.utf8), kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]) { $1 } as CFDictionary, nil)
+            }
+            known = .some(key.isEmpty ? nil : key)
+        }
+    }
+}
+
+/// NVIDIA's hosted model, far quicker and stronger than one that fits on an iPad.
+enum CloudLLM {
+    private static let endpoint = URL(string: "https://integrate.api.nvidia.com/v1/chat/completions")!
+    private static let model = "nvidia/nemotron-3.5-super-vl-120b-a12b"
+
+    private struct Chunk: Decodable {
+        struct Choice: Decodable {
+            struct Delta: Decodable { let content: String? }
+            let delta: Delta
+        }
+        let choices: [Choice]
+    }
+
+    static func generate(key: String, messages: [(role: String, text: String)], maxTokens: Int32, temperature: Double, onPartial: (@Sendable (String) -> Void)?) async throws -> String {
+        var request = URLRequest(url: endpoint, timeoutInterval: 20)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "model": model,
+            "stream": true,
+            "max_tokens": maxTokens,
+            "temperature": temperature,
+            // Its reasoning would use up the answer's tokens, and these answers come from the notes in front of it.
+            "chat_template_kwargs": ["enable_thinking": false],
+            "messages": messages.map { ["role": $0.role, "content": $0.text] },
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (lines, response) = try await URLSession.shared.bytes(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw AIError.failed }
+        var raw = "", nextPartial = Date.distantPast, finished = false
+        for try await line in lines.lines where line.hasPrefix("data:") {
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            if payload == "[DONE]" {
+                finished = true
+                break
+            }
+            guard let chunk = try? JSONDecoder().decode(Chunk.self, from: Data(payload.utf8)), let text = chunk.choices.first?.delta.content else { continue }
+            raw += text
+            let now = Date()
+            if let onPartial, now >= nextPartial {
+                nextPartial = now.addingTimeInterval(0.1)
+                onPartial(TextTools.visibleAnswer(raw))
+            }
+        }
+        let answer = TextTools.visibleAnswer(raw)
+        guard finished, !answer.isEmpty else { throw AIError.failed }
+        onPartial?(answer)
+        return answer
+    }
+}
+
 struct QuizQuestion: Codable, Identifiable, Hashable {
     var id: String { question }
     let question: String
@@ -257,9 +341,9 @@ struct AIAnswer: Identifiable {
 
 enum AI {
 #if canImport(UIKit)
-    @MainActor static var isAvailable: Bool { margin_llm_supported() && (ModelDownloads.shared.isInstalled(.writing) || ModelFile.writing.isInstalled) }
+    @MainActor static var isAvailable: Bool { CloudKey.stored != nil || (margin_llm_supported() && (ModelDownloads.shared.isInstalled(.writing) || ModelFile.writing.isInstalled)) }
 #else
-    static var isAvailable: Bool { margin_llm_supported() && ModelFile.writing.isInstalled }
+    static var isAvailable: Bool { CloudKey.stored != nil || (margin_llm_supported() && ModelFile.writing.isInstalled) }
 #endif
 
     // Each answer's exact shape, enforced while sampling, so a small model can't wander into prose or run on forever.
@@ -292,8 +376,25 @@ enum AI {
     // About 3.5 characters a token, leaving room in the 8,192-token context for the instructions and the answer.
     private static let chunkCharacters = 20_000
 
+    /// NVIDIA first when there's a key. No connection, a refusal, an unusable answer or anything else wrong with it,
+    /// and the model on the iPad answers instead. `grammar` holds that model to a shape; `accept` checks NVIDIA's.
+    static func respond(cloudKey: String?, messages: [(role: String, text: String)], maxTokens: Int32, grammar: String? = nil, accept: (String) -> Bool = { _ in true }, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
+        if let cloudKey {
+            // A structured answer sometimes comes back with a slip in its JSON, so it gets a second try.
+            for _ in 0..<(grammar == nil ? 1 : 2) {
+                do {
+                    let answer = try await CloudLLM.generate(key: cloudKey, messages: messages, maxTokens: maxTokens, temperature: grammar == nil ? 0.3 : 0.1, onPartial: onPartial)
+                    if accept(answer) { return answer }
+                } catch where Task.isCancelled {
+                    throw CancellationError()
+                } catch {}
+            }
+        }
+        return try await LocalLLM.shared.generate(messages: messages, maxTokens: maxTokens, grammar: grammar, onPartial: onPartial)
+    }
+
     static func complete(system: String, messages: [(role: String, text: String)], maxTokens: Int32 = 1200, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
-        try await LocalLLM.shared.generate(messages: [("system", system)] + messages, maxTokens: maxTokens, grammar: nil, onPartial: onPartial)
+        try await respond(cloudKey: CloudKey.stored, messages: [("system", system)] + messages, maxTokens: maxTokens, onPartial: onPartial)
     }
 
     static func complete(system: String, prompt: String, maxTokens: Int32 = 1200, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
@@ -302,7 +403,9 @@ enum AI {
 
     private static func json<T: Decodable>(_ type: T.Type, grammar: String, system: String, prompt: String, maxTokens: Int32) async throws -> T {
         let turns: [(role: String, text: String)] = [("system", system), ("user", prompt)]
-        let reply = try await LocalLLM.shared.generate(messages: turns, maxTokens: maxTokens, grammar: grammar, onPartial: nil)
+        let reply = try await respond(cloudKey: CloudKey.stored, messages: turns, maxTokens: maxTokens, grammar: grammar, accept: { answer in
+            TextTools.jsonArray(in: answer).flatMap { try? JSONDecoder().decode(T.self, from: $0) } != nil
+        })
         guard let data = TextTools.jsonArray(in: reply), let value = try? JSONDecoder().decode(T.self, from: data) else {
             throw AIError.badResponse
         }
@@ -364,7 +467,7 @@ enum AI {
     static func quiz(from text: String, count: Int = 5, using digester: Digester? = nil) async throws -> [QuizQuestion] {
         let notes = try await digest(text, using: digester)
         let questions = try await json([QuizQuestion].self, grammar: quizGrammar,
-            system: "Write a multiple-choice exam on the material. Reply with a JSON array of objects: \"question\" (string), \"options\" (array of 4 strings), \"answer\" (0-based index of the correct option). \(notesRule)",
+            system: "Write a multiple-choice exam on the material. Reply with a JSON array of objects: \"question\" (string), \"options\" (array of 4 strings), \"answer\" (0-based index of the correct option, checked against the options). \(notesRule)",
             prompt: "Write \(count) questions.\n<notes>\n\(notes)\n</notes>", maxTokens: 1800)
         return questions.filter { $0.options.indices.contains($0.answer) }.map {
             QuizQuestion(question: $0.question, options: $0.options.map(TextTools.withoutOptionLabel), answer: $0.answer)
@@ -399,7 +502,7 @@ enum AI {
 
     /// `context` is the handful of passages picked for the question, labelled so answers can name their page.
     static func chatSystem(context: String) -> String {
-        "You answer questions using only the passages from the user's notes, and never add a fact, example, reaction or formula that isn't in them. Only if a passage starts with a label like \"Page 12:\", name that page in the answer, and never make up a page number. If the passages don't contain the answer, say so plainly instead of guessing. Otherwise start with the direct answer in one sentence, then add what the passages say that bears directly on the question: the definition, cause or mechanism, conditions, formulas, exact values with units, and any types or consequences they list. Copy terms, numbers and formulas exactly, and leave out anything about other topics. Use short paragraphs or bullets. \(plainMath) \(notesRule)\n\n<notes>\n\(context)\n</notes>"
+        "You answer questions using only the passages from the user's notes, and never add a fact, example, reaction or formula that isn't in them. Only if a passage starts with a label like \"Page 12:\", name that page in the answer, and never make up a page number. If the passages don't contain the answer, say so plainly instead of guessing. Otherwise start with the direct answer in one sentence, then give everything the passages say about it: the definition, cause or mechanism, conditions, formulas, exact values with units, examples, and any types or consequences they list. Copy terms, numbers and formulas exactly, and leave out anything about other topics. Use short paragraphs or bullets. \(plainMath) \(notesRule)\n\n<notes>\n\(context)\n</notes>"
     }
 
     static func ask(_ mode: AskMode, about text: String, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
@@ -425,7 +528,8 @@ enum AI {
             ("system", "Choose the folder this note belongs in. Reply with only the folder's name. \(notesRule)"),
             ("user", "Folders: \(names.joined(separator: ", "))\n<notes>\n\(String(text.prefix(4000)))\n</notes>"),
         ]
-        return try await LocalLLM.shared.generate(messages: turns, maxTokens: 40, grammar: "root ::= " + names.map(literal).joined(separator: " | "), onPartial: nil)
+        let reply = try await respond(cloudKey: CloudKey.stored, messages: turns, maxTokens: 40, grammar: "root ::= " + names.map(literal).joined(separator: " | "), accept: { names.contains($0.trimmingCharacters(in: .whitespacesAndNewlines)) })
+        return reply.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func cleanTranscript(_ text: String) async throws -> String {

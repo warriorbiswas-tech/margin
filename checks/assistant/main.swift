@@ -113,6 +113,66 @@ let math = try await AI.math(fromRecognized: "x2 + 1")
 check(math.unicode == "x² + 1" && math.latex == "x^{2} + 1", "math decodes")
 check(try await AI.folder(for: "Mitosis", among: ["Biology", "History"]) == "Biology", "a folder comes from the list")
 
+// NVIDIA answers first, and anything wrong with it falls back to the model on the iPad.
+final class FakeNVIDIA: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var status = 200
+    nonisolated(unsafe) static var stream = ""
+    nonisolated(unsafe) static var offline = false
+    nonisolated(unsafe) static var requests = 0
+    nonisolated(unsafe) static var lastKey: String?
+    override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "integrate.api.nvidia.com" }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.requests += 1
+        Self.lastKey = request.value(forHTTPHeaderField: "Authorization")
+        if Self.offline {
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+            return
+        }
+        client?.urlProtocol(self, didReceive: HTTPURLResponse(url: request.url!, statusCode: Self.status, httpVersion: nil, headerFields: nil)!, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(Self.stream.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+    override func stopLoading() {}
+}
+URLProtocol.registerClass(FakeNVIDIA.self)
+func sse(_ words: String...) -> String {
+    words.map { #"data: {"choices":[{"delta":{"content":"\#($0)"}}]}"# + "\n\n" }.joined() + "data: [DONE]\n\n"
+}
+let hello: [(role: String, text: String)] = [("user", "hello")]
+FakeNVIDIA.stream = sse("From ", "NVIDIA")
+var localCalls = mock_calls()
+check(try await AI.respond(cloudKey: "secret", messages: hello, maxTokens: 50) == "From NVIDIA", "NVIDIA answers first")
+check(mock_calls() == localCalls, "the model on the iPad isn't touched")
+check(FakeNVIDIA.lastKey == "Bearer secret", "the key goes in the header")
+let cloudPartials = Box()
+_ = try await AI.respond(cloudKey: "secret", messages: hello, maxTokens: 50) { cloudPartials.add($0) }
+check(cloudPartials.all.last == "From NVIDIA", "the whole answer reaches the screen")
+FakeNVIDIA.requests = 0
+check(try await AI.respond(cloudKey: nil, messages: hello, maxTokens: 50).hasPrefix("Answer"), "no key means the iPad's model")
+check(FakeNVIDIA.requests == 0, "and nothing is sent")
+for status in [401, 410, 429, 500] {
+    FakeNVIDIA.status = status
+    check(try await AI.respond(cloudKey: "secret", messages: hello, maxTokens: 50).hasPrefix("Answer"), "falls back after a \(status)")
+}
+FakeNVIDIA.status = 200
+FakeNVIDIA.offline = true
+check(try await AI.respond(cloudKey: "secret", messages: hello, maxTokens: 50).hasPrefix("Answer"), "falls back with no connection")
+FakeNVIDIA.offline = false
+FakeNVIDIA.stream = #"data: {"choices":[{"delta":{"content":"Cut o"}}]}"# + "\n\n"
+check(try await AI.respond(cloudKey: "secret", messages: hello, maxTokens: 50).hasPrefix("Answer"), "falls back from an answer cut off halfway")
+FakeNVIDIA.stream = sse("not", " json")
+check(try await AI.respond(cloudKey: "secret", messages: hello, maxTokens: 50, accept: { $0.hasPrefix("[") }).hasPrefix("Answer"), "falls back from an answer of the wrong shape")
+FakeNVIDIA.stream = "data: [DONE]\n\n"
+check(try await AI.respond(cloudKey: "secret", messages: hello, maxTokens: 50).hasPrefix("Answer"), "falls back from an empty answer")
+FakeNVIDIA.offline = true
+mock_set_tokens(1_000_000)
+let stoppedCloud = Task { try await AI.respond(cloudKey: "secret", messages: hello, maxTokens: 50) }
+stoppedCloud.cancel()
+do { _ = try await stoppedCloud.value; check(false, "a stopped answer doesn't carry on") } catch is CancellationError {}
+mock_set_tokens(40)
+FakeNVIDIA.offline = false
+
 // Unloading frees the model, and the next question opens it again.
 let opens = mock_opens()
 LocalLLM.shared.unload()

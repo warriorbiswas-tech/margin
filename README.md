@@ -1,6 +1,6 @@
 # Margin
 
-A note-taking and PDF annotation app for iPad, built for lectures, textbooks and meetings. Everything, including the AI, runs on the device.
+A note-taking and PDF annotation app for iPad, built for lectures, textbooks and meetings. Notes stay on the device and your own iCloud Drive, unless you add an NVIDIA key for the online AI.
 
 - **Ink and PDFs:** PencilKit writing on paper or PDF pages, highlighter, shapes, dashed pen, lasso, study tape, whiteout and redaction, comments, stamps, signatures.
 - **Pages:** tabs for the notes you have open, subfolders, notebook covers, whiteboards, an endless page that grows as you write, page duplication, read-only mode, stickers of your own, and cutting a photo's subject out of its background.
@@ -9,9 +9,11 @@ A note-taking and PDF annotation app for iPad, built for lectures, textbooks and
 - **Study:** chat with a note, summaries, flashcards with spaced review, quizzes, mind maps, teach-back, explaining or solving a selected area step by step, homework from a photo, filing notes into folders, and filling in what your notes missed from a recording.
 - **Sync:** every note goes to a folder you choose in iCloud Drive.
 
-## On-device AI
+## AI
 
-Nothing is sent to a server. Open-source models download once from Hugging Face, each pinned to a checksum:
+With an NVIDIA API key in Settings, chat, summaries and study tools use NVIDIA's hosted Nemotron model, which means your question and the notes it needs are sent to NVIDIA. The key stays in the device's Keychain. Without a key, or whenever NVIDIA can't answer, the on-device model takes over, and transcripts always stay on the device.
+
+The on-device models are open source and download once from Hugging Face, each pinned to a checksum:
 
 | Job | Model | Engine |
 | --- | --- | --- |

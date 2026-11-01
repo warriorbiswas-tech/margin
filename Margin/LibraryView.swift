@@ -593,6 +593,7 @@ struct SettingsView: View {
     @AppStorage("eraserReturns") private var eraserReturns = true
     @AppStorage("tiltPressure") private var tiltPressure = false
     @AppStorage("tiltStrength") private var tiltStrength = 0.6
+    @State private var nvidiaKey = CloudKey.stored ?? ""
     @AppStorage("theme") private var theme = "system"
     @AppStorage("invertPages") private var invertPages = true
     @State private var folder = Sync.folderName
@@ -641,6 +642,16 @@ struct SettingsView: View {
                     if speechLanguage != "en" { Text("Languages other than English use the Other Languages model, downloaded below.") }
                 }
                 Section {
+                    SecureField("NVIDIA API Key", text: $nvidiaKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: nvidiaKey) { _, key in CloudKey.save(key) }
+                } header: {
+                    Text("Online AI")
+                } footer: {
+                    Text("With a key, chat, summaries and study tools use NVIDIA's model first, and your question and the notes it needs are sent to NVIDIA. Without one, or whenever NVIDIA can't answer, the on-device model below takes over. Transcripts always stay on this iPad.")
+                }
+                Section {
                     LabeledContent(ModelFile.writing.title) { ModelRow(file: .writing) }
                     LabeledContent(ModelFile.speech.title) { ModelRow(file: .speech) }
                     LabeledContent(ModelFile.speechWorld.title) { ModelRow(file: .speechWorld) }
@@ -648,7 +659,7 @@ struct SettingsView: View {
                 } header: {
                     Text("On-Device AI")
                 } footer: {
-                    Text("Summaries, chat, flashcards, quizzes and transcripts run entirely on this iPad with open-source models. They download once from Hugging Face, then work offline. The AI never sends your notes anywhere.")
+                    Text("These open-source models run entirely on this iPad. They download once from Hugging Face, then work offline, and never send your notes anywhere.")
                 }
                 Section {
                     LabeledContent("Folder", value: folder ?? "Not set")
