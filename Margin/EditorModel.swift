@@ -821,9 +821,12 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         var strokes = canvas.drawing.strokes
         guard !penDown, lastTouchType == .pencil, strokes.last?.path.creationDate == stroke.path.creationDate else { return }
         let strength = Prefs.tiltStrength
+        // These inks draw nothing below a point size of 2.
+        let visibleFrom: CGFloat = [.pen, .fountainPen, .monoline].contains(stroke.ink.inkType) ? 2 : 0
         let points = stroke.path.map { p in
-            let scale = TiltPressure.scale(altitude: p.altitude, strength: strength)
-            return PKStrokePoint(location: p.location, timeOffset: p.timeOffset, size: CGSize(width: p.size.width * scale, height: p.size.height * scale), opacity: p.opacity, force: p.force, azimuth: p.azimuth, altitude: p.altitude, secondaryScale: p.secondaryScale)
+            let width = TiltPressure.size(p.size.width, visibleFrom: visibleFrom, altitude: p.altitude, strength: strength)
+            let height = TiltPressure.size(p.size.height, visibleFrom: visibleFrom, altitude: p.altitude, strength: strength)
+            return PKStrokePoint(location: p.location, timeOffset: p.timeOffset, size: CGSize(width: width, height: height), opacity: p.opacity, force: p.force, azimuth: p.azimuth, altitude: p.altitude, secondaryScale: p.secondaryScale)
         }
         strokes[strokes.count - 1].path = PKStrokePath(controlPoints: points, creationDate: stroke.path.creationDate)
         setInk(PKDrawing(strokes: strokes))

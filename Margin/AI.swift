@@ -233,9 +233,9 @@ enum AskMode: String, CaseIterable, Identifiable {
     }
     var instruction: String {
         switch self {
-        case .explain: "Explain this clearly and simply, as a patient tutor would, with one short example."
-        case .define: "List the key terms in this, each with a one-sentence definition."
-        case .steps: "Work through this problem in short numbered steps, then give the final answer on its own line."
+        case .explain: "Explain only what this text says, as a patient tutor would: what it means, then why it is so or how it works. Use its own facts, numbers and examples, and add none of your own. Copy any calculation as it is, never redoing it. Start directly, in at most three short paragraphs, without emoji."
+        case .define: "List up to 10 key terms from this text, each once. Define each in one or two sentences using the text's own wording, and give its formula or value only if the text does."
+        case .steps: "Work through this problem in numbered steps. Name each rule or formula before using it and show the numbers going in. Give the final answer with its units on its own line."
         }
     }
 }
@@ -340,8 +340,9 @@ enum AI {
     static func summary(of text: String, using digester: Digester? = nil, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {
         let notes = try await digest(text, using: digester)
         // This model ignores a requested length but keeps to a count of bullets.
-        let bullets = min(max(notes.count / 500, 5), 30)
-        return try await complete(system: "Summarize study notes as at most \(bullets) short bullet points, one line each, grouped by topic. Keep only the main ideas and the definitions and numbers they depend on, in your own words. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
+        let bullets = min(max(notes.count / 300, 6), 40)
+        let summary = try await complete(system: "Summarize study notes as at most \(bullets) bullet points grouped by topic, each point once. Each bullet states one specific point in a complete sentence, with the definition, mechanism, formula or exact value it depends on, taken from the notes. Don't add anything the notes don't say. \(notesRule)", prompt: "<notes>\n\(notes)\n</notes>", onPartial: onPartial)
+        return TextTools.withoutCutOffLine(summary)
     }
 
     static func flashcards(from text: String, count: Int = 10, using digester: Digester? = nil) async throws -> [(front: String, back: String)] {
@@ -391,7 +392,7 @@ enum AI {
 
     /// `context` is the handful of passages picked for the question, labelled so answers can name their page.
     static func chatSystem(context: String) -> String {
-        "You answer questions using only the passages from the user's notes. Only if a passage starts with a label like \"Page 12:\", name that page in the answer, and never make up a page number. If the passages don't contain the answer, say so plainly instead of guessing. Be concise. \(plainMath) \(notesRule)\n\n<notes>\n\(context)\n</notes>"
+        "You answer questions using only the passages from the user's notes, and never add a fact, example, reaction or formula that isn't in them. Only if a passage starts with a label like \"Page 12:\", name that page in the answer, and never make up a page number. If the passages don't contain the answer, say so plainly instead of guessing. Otherwise start with the direct answer in one sentence, then add what the passages say that bears directly on the question: the definition, cause or mechanism, conditions, formulas, exact values with units, and any types or consequences they list. Copy terms, numbers and formulas exactly, and leave out anything about other topics. Use short paragraphs or bullets. \(plainMath) \(notesRule)\n\n<notes>\n\(context)\n</notes>"
     }
 
     static func ask(_ mode: AskMode, about text: String, onPartial: (@Sendable (String) -> Void)? = nil) async throws -> String {

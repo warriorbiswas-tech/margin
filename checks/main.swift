@@ -190,12 +190,20 @@ check(TextTools.withoutLaTeX("x \\rightarrow y") == "x → y", "a longer command
 check(TextTools.withoutLaTeX("It costs $5 and $6 today.") == "It costs $5 and $6 today.", "money stays")
 check(TextTools.withoutLaTeX("$x^{2} = 4$") == "x^2 = 4", "inline math loses its dollars")
 
+// Answers that ran out of room
+check(TextTools.withoutCutOffLine("- One.\n- Two states that") == "- One.", "an unfinished last line goes")
+check(TextTools.withoutCutOffLine("- One.\n- Two.\n") == "- One.\n- Two.", "a finished answer stays")
+check(TextTools.withoutCutOffLine("Only one line") == "Only one line", "a single line is never emptied")
+
 // Tilt for pressure
 let degrees = CGFloat.pi / 180
 check(abs(TiltPressure.scale(altitude: 56 * degrees, strength: 1) - 1) < 0.001, "a normal writing angle keeps the pen's width")
 check(abs(TiltPressure.scale(altitude: 20 * degrees, strength: 1) - 3) < 0.001, "leaning over thickens the line, up to a limit")
 check(abs(TiltPressure.scale(altitude: 90 * degrees, strength: 1) - 1 / 3) < 0.001, "upright thins it, down to a limit")
 check(TiltPressure.scale(altitude: 40 * degrees, strength: 0.3) < TiltPressure.scale(altitude: 40 * degrees, strength: 1), "strength sets how much it changes")
+
+check(TiltPressure.size(3, visibleFrom: 2, altitude: 20 * degrees, strength: 1) == 5, "only the visible part of a line is scaled")
+check(TiltPressure.size(1.5, visibleFrom: 2, altitude: 20 * degrees, strength: 1) == 1.5, "a tapered end stays as it was")
 
 // Undo and redo
 var history = History<Int>(limit: 3)

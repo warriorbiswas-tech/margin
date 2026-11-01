@@ -65,10 +65,16 @@ enum TiltPressure {
     private static let writingAngle = 56 * CGFloat.pi / 180
     private static let fullLean = 20 * CGFloat.pi / 180
 
-    /// A width multiplier: 1 at a normal writing angle, up to 3 leaning over and down to a third upright, at full strength.
+    /// A line width multiplier: 1 at a normal writing angle, up to 3 leaning over and down to a third upright, at full strength.
     static func scale(altitude: CGFloat, strength: Double) -> CGFloat {
         let lean = max(-1, min(1, (writingAngle - altitude) / fullLean))
         return pow(3, lean * CGFloat(strength))
+    }
+
+    /// A stroke point's new size. `visibleFrom` is the size below which its ink draws nothing, so only what's above it is scaled.
+    static func size(_ size: CGFloat, visibleFrom: CGFloat, altitude: CGFloat, strength: Double) -> CGFloat {
+        guard size > visibleFrom else { return size }
+        return visibleFrom + (size - visibleFrom) * scale(altitude: altitude, strength: strength)
     }
 }
 
@@ -557,6 +563,13 @@ enum TextTools {
             return ""
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// An answer that ran out of room stops mid-sentence, so its unfinished last line goes.
+    static func withoutCutOffLine(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = trimmed.last, !".!?:)*".contains(last), let lineStart = trimmed.lastIndex(of: "\n") else { return trimmed }
+        return String(trimmed[..<lineStart]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Whisper marks silence and noises as "[BLANK_AUDIO]" or "(wind blowing)"; those aren't words anyone said.

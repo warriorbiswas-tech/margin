@@ -38,7 +38,7 @@ final class LocalWhisper: @unchecked Sendable {
         margin_whisper_close(handle)
         handle = nil
         openModel = nil
-        // Without this, an iPad's allocator keeps a couple of hundred megabytes of the freed model for itself.
+        // Hands back what it can of the freed model. iOS takes the rest as soon as something else needs the room.
         malloc_zone_pressure_relief(nil, 0)
     }
 
