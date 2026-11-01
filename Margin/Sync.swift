@@ -85,38 +85,39 @@ enum Sync {
         for id in ids {
             let mine = local.appendingPathComponent(id), theirs = remote.appendingPathComponent(id)
             guard ready(theirs) else { continue } // still downloading, so the next sync picks it up
+            func upload() throws {
+                try mirror(mine, to: theirs)
+                stamps[id] = info(of: theirs)?.updatedAt
+                outcome.uploaded += 1
+            }
+            func download() throws {
+                try mirror(theirs, to: mine)
+                stamps[id] = info(of: mine)?.updatedAt
+                outcome.downloaded += 1
+            }
             do {
                 switch (info(of: mine)?.updatedAt, info(of: theirs)?.updatedAt) {
                 case (nil, nil):
                     continue
-                case let (a?, nil):
-                    try mirror(mine, to: theirs)
-                    stamps[id] = a
-                    outcome.uploaded += 1
-                case let (nil, b?):
+                case (_?, nil):
+                    try upload()
+                case (nil, _?):
                     guard !open.contains(id) else { continue }
-                    try mirror(theirs, to: mine)
-                    stamps[id] = b
-                    outcome.downloaded += 1
+                    try download()
                 case let (a?, b?):
                     if a == b {
                         stamps[id] = a
                     } else if b == stamps[id] {
-                        try mirror(mine, to: theirs)
-                        stamps[id] = a
-                        outcome.uploaded += 1
+                        try upload()
                     } else if !open.contains(id) {
                         if a == stamps[id] {
-                            try mirror(theirs, to: mine)
-                            stamps[id] = b
+                            try download()
                         } else {
                             // Changed in both places, so neither version gets thrown away.
                             try keepCopy(of: theirs, in: local)
-                            try mirror(mine, to: theirs)
-                            stamps[id] = a
-                            outcome.uploaded += 1
+                            outcome.downloaded += 1
+                            try upload()
                         }
-                        outcome.downloaded += 1
                     }
                 }
             } catch {
@@ -157,20 +158,20 @@ enum Sync {
     }
 
     /// Copies only what changed, since a big PDF never does, and writes note.json last:
-    /// an interrupted copy still looks out of date, so the next sync finishes it.
+    /// an interrupted copy still looks out of date, so the next sync finishes it. It's read first, because the
+    /// note can be saved during a long copy, and the files already sent wouldn't match a newer note.json.
     private static func mirror(_ source: URL, to target: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: target, withIntermediateDirectories: true)
         let wanted = syncedFiles(in: source)
+        let manifest = wanted.contains("note.json") ? try read(source.appendingPathComponent("note.json")) : nil
         for path in Set(syncedFiles(in: target)).subtracting(wanted) {
             try fm.removeItem(at: target.appendingPathComponent(path))
         }
         for path in wanted where path != "note.json" && changed(source.appendingPathComponent(path), target.appendingPathComponent(path)) {
             try copy(source.appendingPathComponent(path), to: target.appendingPathComponent(path))
         }
-        if wanted.contains("note.json") {
-            try copy(source.appendingPathComponent("note.json"), to: target.appendingPathComponent("note.json"))
-        }
+        if let manifest { try write(manifest, to: target.appendingPathComponent("note.json")) }
     }
 
     private static func syncedFiles(in dir: URL) -> [String] {
@@ -229,6 +230,18 @@ enum Sync {
         return try result?.get() ?? Data()
     }
 
+    private static func write(_ data: Data, to target: URL) throws {
+        var coordination: NSError?, failure: Error?
+        NSFileCoordinator().coordinate(writingItemAt: target, options: .forReplacing, error: &coordination) { url in
+            do {
+                try data.write(to: url, options: .atomic)
+            } catch {
+                failure = error
+            }
+        }
+        if let error = coordination ?? failure { throw error }
+    }
+
     private static func copy(_ source: URL, to target: URL) throws {
         var coordination: NSError?, failure: Error?
         NSFileCoordinator().coordinate(readingItemAt: source, options: [], writingItemAt: target, options: .forReplacing, error: &coordination) { from, to in
@@ -238,8 +251,12 @@ enum Sync {
                 let temp = to.deletingLastPathComponent().appendingPathComponent(".\(to.lastPathComponent).syncing")
                 try? fm.removeItem(at: temp)
                 try fm.copyItem(at: from, to: temp)
-                try? fm.removeItem(at: to)
-                try fm.moveItem(at: temp, to: to)
+                // Swapped in one step: another device seeing this file missing would remove its own copy.
+                if fm.fileExists(atPath: to.path) {
+                    _ = try fm.replaceItemAt(to, withItemAt: temp)
+                } else {
+                    try fm.moveItem(at: temp, to: to)
+                }
             } catch {
                 failure = error
             }

@@ -118,4 +118,38 @@ _ = syncIPad()
 assert(!fm.fileExists(atPath: remote.appendingPathComponent(a).appendingPathComponent("versions").path))
 assert(fm.fileExists(atPath: versions.appendingPathComponent("v1").path))
 
+// A file replaced by an edit keeps the source's date, so the next sync doesn't copy it again.
+let dated = UUID().uuidString
+write(ipad, dated, at: 1, drawing: "first")
+_ = syncIPad()
+write(ipad, dated, at: 2, drawing: "second")
+_ = syncIPad()
+func modified(_ device: URL) -> Date? {
+    (try? fm.attributesOfItem(atPath: device.appendingPathComponent(dated).appendingPathComponent("drawing.data").path))?[.modificationDate] as? Date
+}
+assert(drawing(remote, dated) == "second" && modified(remote) == modified(ipad))
+
+// Writing while a sync copies the note doesn't look like a change made on another device.
+let busy = UUID().uuidString
+write(ipad, busy, at: 100, title: "busy")
+let pages = ipad.appendingPathComponent(busy).appendingPathComponent("pages")
+try! fm.createDirectory(at: pages, withIntermediateDirectories: true)
+for i in 0..<2000 { try! Data("page \(i)".utf8).write(to: pages.appendingPathComponent("\(i)")) }
+let before = count(ipad)
+let writing = Thread {
+    var time = 100.0
+    while !Thread.current.isCancelled {
+        time += 0.001
+        write(ipad, busy, at: time, title: "busy")
+    }
+}
+writing.start()
+_ = syncIPad()
+writing.cancel()
+Thread.sleep(forTimeInterval: 0.1)
+write(ipad, busy, at: 200, title: "last edit")
+_ = syncIPad()
+assert(count(ipad) == before, "a false conflict made a copy")
+assert(title(remote, busy) == "last edit")
+
 print("ok")

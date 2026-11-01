@@ -117,6 +117,13 @@ final class TiledView: UIView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    // Tiles already queued still draw on other threads, and the layer doesn't keep its view alive for them.
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        guard window == nil else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { withExtendedLifetime(self) {} }
+    }
+
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
         painter?(ctx)
@@ -500,6 +507,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
         shownPages = nearby
         let wanted = Set(note.pages[nearby].map(\.id))
         for (id, view) in pageViews where !wanted.contains(id) {
+            view.painter = nil // it stays a few seconds for its last tiles, without its picture
             view.removeFromSuperview()
             pageViews[id] = nil
         }

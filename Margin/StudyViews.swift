@@ -598,6 +598,7 @@ struct ReviewView: View {
     }
 
     private func answer(_ due: Library.DueCard, _ grade: SM2.Grade) {
+        guard queue.first?.id == due.id else { return } // a second tap before the next card appears
         onGrade(due, grade)
         queue.removeFirst()
         if grade == .again { queue.append(due) } else { done += 1 }
