@@ -57,3 +57,30 @@ jobs:
           /tmp/assistant
       - name: Stress
         run: swiftc -O Margin/Geometry.swift Margin/Sync.swift checks/stress/main.swift -o /tmp/margin-stress && /tmp/margin-stress
+
+  ipa:
+    name: Unsigned IPA
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+      - name: Build
+        run: |
+          xcodebuild build \
+            -project Margin.xcodeproj \
+            -target Margin \
+            -sdk iphoneos \
+            -configuration Release \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Package
+        run: |
+          mkdir Payload
+          cp -R build/Release-iphoneos/Margin.app Payload/
+          zip -qry Margin.ipa Payload
+      - uses: actions/upload-artifact@v5
+        with:
+          name: Margin-ipa
+          path: Margin.ipa
+          retention-days: 30
