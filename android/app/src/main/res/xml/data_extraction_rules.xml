@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only notes are backed up, so the NVIDIA key and the models never leave the device. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="notes/" />
+        <include domain="file" path="subjects.json" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="notes/" />
+        <include domain="file" path="subjects.json" />
+    </device-transfer>
+</data-extraction-rules>

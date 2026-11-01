@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Only notes are backed up, so the NVIDIA key and the models never leave the device. -->
+<full-backup-content>
+    <include domain="file" path="notes/" />
+    <include domain="file" path="subjects.json" />
+</full-backup-content>
