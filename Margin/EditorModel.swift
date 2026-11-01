@@ -149,7 +149,7 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
     @ObservationIgnored private var studyCache: (drawing: PKDrawing, pages: [Page], elements: [Element], text: [String])?
     @ObservationIgnored private var history = History<NoteState>(limit: 200)
     @ObservationIgnored private var inkOnRecord: PKDrawing
-    @ObservationIgnored private var touchRecorded = false
+    @ObservationIgnored var touchRecorded = false
     @ObservationIgnored private var lastTouchType = UITouch.TouchType.direct
     private(set) var canUndo = false
     private(set) var canRedo = false
@@ -735,12 +735,14 @@ final class EditorModel: NSObject, UIGestureRecognizerDelegate, Identifiable, PK
 
     func canvasViewDidBeginUsingTool(_ canvasView: PKCanvasView) {
         penDown = true
-        touchRecorded = false
+        // The eraser can reach typed words before PencilKit sees the stroke, and that already made its undo step.
+        touchRecorded = tool == .eraser && eraserUndoRegistered
         liveTask?.cancel()
     }
 
     func canvasViewDidEndUsingTool(_ canvasView: PKCanvasView) {
         penDown = false
+        eraserUndoRegistered = false
         if tool == .eraser, Prefs.eraserReturns {
             tool = toolBeforeEraser
         } else {

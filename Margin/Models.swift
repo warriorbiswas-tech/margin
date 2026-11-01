@@ -221,6 +221,7 @@ extension Note {
         favorite = c.value(.favorite, false)
         deletedAt = c.value(.deletedAt, nil)
         pages = c.value(.pages, pages)
+        if pages.isEmpty { pages = [Page()] } // everything in the editor assumes a page to show
         elements = c.value(.elements, [])
         recordings = c.value(.recordings, [])
         searchText = c.value(.searchText, "")

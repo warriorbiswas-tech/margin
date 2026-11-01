@@ -41,9 +41,11 @@ extension EditorModel {
         let area = CGRect(x: min(previous.x, point.x), y: min(previous.y, point.y), width: abs(previous.x - point.x), height: abs(previous.y - point.y)).insetBy(dx: -6, dy: -6)
         let edits = textEdits(crossing: area)
         guard !edits.isEmpty else { return }
+        // Ink or type, whichever the eraser reaches first starts the stroke's one undo step.
         if !eraserUndoRegistered {
-            checkpoint()
+            if !(penDown && touchRecorded) { checkpoint() }
             eraserUndoRegistered = true
+            touchRecorded = true
         }
         apply(edits)
         syncElements()
@@ -1038,8 +1040,18 @@ extension EditorModel {
     // MARK: Paper
 
     func setBackgroundImage(_ data: Data, for page: Page) {
-        guard let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.9),
-              let i = note.pages.firstIndex(of: page) else {
+        guard let image = UIImage(data: data), image.size.width > 0, let i = note.pages.firstIndex(of: page) else {
+            message = "That image couldn't be read."
+            return
+        }
+        // Each page on screen draws its own copy, and a camera photo at full size takes a couple of hundred megabytes.
+        let fitted = min(1, 3072 / image.size.width)
+        let size = CGSize(width: (image.size.width * fitted).rounded(), height: (image.size.height * fitted).rounded())
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let paper = UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let jpeg = paper.jpegData(compressionQuality: 0.9) else {
             message = "That image couldn't be read."
             return
         }
