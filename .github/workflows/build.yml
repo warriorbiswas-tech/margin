@@ -78,6 +78,8 @@ jobs:
         run: |
           mkdir Payload
           cp -R build/Release-iphoneos/Margin.app Payload/
+          test -f Payload/Margin.app/Frameworks/llama.framework/llama
+          test -f Payload/Margin.app/Frameworks/whisper.framework/whisper
           zip -qry Margin.ipa Payload
       - uses: actions/upload-artifact@v5
         with:
