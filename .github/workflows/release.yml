@@ -72,7 +72,7 @@ jobs:
       - name: Package
         run: |
           apk=android/app/build/outputs/apk/release/app-release.apk
-          "$ANDROID_HOME"/build-tools/*/apksigner verify "$apk"
+          "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify "$apk"
           cp "$apk" "Margin-$GITHUB_REF_NAME-Android.apk"
       - uses: actions/upload-artifact@v7
         with:
