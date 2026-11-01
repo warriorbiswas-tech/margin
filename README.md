@@ -6,7 +6,7 @@ A note-taking and PDF annotation app for iPad, built for lectures, textbooks and
 - **Pages:** tabs for the notes you have open, subfolders, notebook covers, whiteboards, an endless page that grows as you write, page duplication, read-only mode, stickers of your own, and cutting a photo's subject out of its background.
 - **Live Text:** handwriting turns into type where it's written, through Scribble.
 - **Recording:** audio that stays in step with your notes, so tapping a stroke plays what was being said when you wrote it, with a live transcript.
-- **Study:** chat with a note, summaries, flashcards with spaced review, quizzes, mind maps, teach-back, explaining or solving a selected area step by step, homework from a photo, filing notes into folders, and filling in what your notes missed from a recording.
+- **Study:** chat with a note, summaries, key points and action items, flashcards with spaced review, quizzes, mind maps, teach-back, explaining or solving a selected area step by step, homework from a photo, filing notes into folders, and filling in what your notes missed from a recording.
 - **Sync:** every note goes to a folder you choose in iCloud Drive.
 
 ## AI
@@ -24,6 +24,8 @@ The on-device models are open source and download once from Hugging Face, each p
 ## Building
 
 Open `Margin.xcodeproj` in Xcode and run on an iPad with iPadOS 17 or later. The engines in `Vendor/` have no Simulator slice, so AI features are unavailable there and everything else works.
+
+Without a Mac: every push to `main` builds an unsigned `Margin.ipa`. Open the latest run under Actions › Build, download `Margin-ipa` from Artifacts and unzip it, then install `Margin.ipa` with [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io) from a Windows PC or Mac, signing in with your Apple ID. With a free Apple ID the app has to be reinstalled every 7 days.
 
 ## Checks
 

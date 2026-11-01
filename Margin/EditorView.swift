@@ -259,6 +259,37 @@ struct EditorView: View {
     @State private var presets: [PenPreset] = (UserDefaults.standard.data(forKey: "penPresets")).flatMap { try? JSONDecoder().decode([PenPreset].self, from: $0) } ?? []
 
     var body: some View {
+        alerted
+            .overlay(alignment: .bottom) {
+                if let notice = model.notice {
+                    Text(notice)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(2)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .background(.regularMaterial, in: Capsule())
+                        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+                        .padding(.bottom, 76)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: model.notice)
+            .alert("Margin", isPresented: messageShown) {
+                Button("OK") {}
+            } message: {
+                Text(model.message ?? "")
+            }
+    }
+
+    private var commentShown: Binding<Bool> {
+        Binding(get: { model.commentEditingID != nil }, set: { _ in })
+    }
+
+    private var messageShown: Binding<Bool> {
+        Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })
+    }
+
+    private var stage: some View {
         ZStack(alignment: .topTrailing) {
             VStack(spacing: 0) {
                 if !model.focusMode {
@@ -310,122 +341,115 @@ struct EditorView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .sheet(item: $panel) { panel in
-            switch panel {
-            case .pages: PagesSheet(model: model)
-            case .transcript: TranscriptSheet(model: model)
-            case .assistant: AssistantSheet(model: model)
-            case .find: FindSheet(model: model)
-            case .versions: VersionsSheet(model: model)
-            case .excerpts: ExcerptsSheet(model: model)
-            case .stickers: StickerSheet(model: model)
-            case .noteLink: NoteLinkSheet(model: model)
-            case .signature: SignatureSheet(model: model)
-            case .fontPicker:
-                FontPicker { family in
-                    switch fontTarget {
-                    case .live: model.liveFont = family
-                    case .text:
-                        model.textFont = family
-                        model.applyTextStyle()
-                    case .region: Task { await model.convertRegionToFont(family) }
+    }
+
+    private var presented: some View {
+        stage
+            .sheet(item: $panel) { panel in
+                switch panel {
+                case .pages: PagesSheet(model: model)
+                case .transcript: TranscriptSheet(model: model)
+                case .assistant: AssistantSheet(model: model)
+                case .find: FindSheet(model: model)
+                case .versions: VersionsSheet(model: model)
+                case .excerpts: ExcerptsSheet(model: model)
+                case .stickers: StickerSheet(model: model)
+                case .noteLink: NoteLinkSheet(model: model)
+                case .signature: SignatureSheet(model: model)
+                case .fontPicker:
+                    FontPicker { family in
+                        switch fontTarget {
+                        case .live: model.liveFont = family
+                        case .text:
+                            model.textFont = family
+                            model.applyTextStyle()
+                        case .region: Task { await model.convertRegionToFont(family) }
+                        }
                     }
-                }
-            case .scan:
-                ScannerSheet { images in
-                    let doc = PDFDocument()
-                    for image in images {
-                        if let page = PDFPage(image: image) { doc.insert(page, at: doc.pageCount) }
+                case .scan:
+                    ScannerSheet { images in
+                        let doc = PDFDocument()
+                        for image in images {
+                            if let page = PDFPage(image: image) { doc.insert(page, at: doc.pageCount) }
+                        }
+                        model.insertPDF(doc)
                     }
-                    model.insertPDF(doc)
+                    .ignoresSafeArea()
                 }
-                .ignoresSafeArea()
             }
-        }
-        .sheet(item: $exportURL) { url in ActivitySheet(url: url) }
-        .sheet(item: $model.aiAnswer) { _ in AnswerSheet(model: model) }
-        .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 20, matching: .images)
-        .fileImporter(isPresented: $showPDFImporter, allowedContentTypes: DocumentConverter.importable) { result in
-            if case let .success(url) = result { model.importFile(from: url) }
-        }
-        .fileImporter(isPresented: $showAudioImporter, allowedContentTypes: [.audio]) { result in
-            if case let .success(url) = result { model.importAudio(from: url) }
-        }
-        .onChange(of: photoItems) { _, items in
-            guard !items.isEmpty else { return }
-            Task {
-                for (i, item) in items.enumerated() {
-                    if let data = try? await item.loadTransferable(type: Data.self) { model.addImage(data, offset: CGFloat(i) * 28) }
+            .sheet(item: $exportURL) { url in ActivitySheet(url: url) }
+            .sheet(item: $model.aiAnswer) { _ in AnswerSheet(model: model) }
+            .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 20, matching: .images)
+            .fileImporter(isPresented: $showPDFImporter, allowedContentTypes: DocumentConverter.importable) { result in
+                if case let .success(url) = result { model.importFile(from: url) }
+            }
+            .fileImporter(isPresented: $showAudioImporter, allowedContentTypes: [.audio]) { result in
+                if case let .success(url) = result { model.importAudio(from: url) }
+            }
+    }
+
+    private var observed: some View {
+        presented
+            .onChange(of: photoItems) { _, items in
+                guard !items.isEmpty else { return }
+                Task {
+                    for (i, item) in items.enumerated() {
+                        if let data = try? await item.loadTransferable(type: Data.self) { model.addImage(data, offset: CGFloat(i) * 28) }
+                    }
+                    photoItems = []
                 }
-                photoItems = []
             }
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { model.saveNow() }
-        }
-        .onDisappear { model.close() }
-        .onAppear { model.darkPages = invertPages && colorScheme == .dark }
-        .onChange(of: colorScheme) { _, scheme in model.darkPages = invertPages && scheme == .dark }
-        .onChange(of: invertPages) { _, invert in model.darkPages = invert && colorScheme == .dark }
-        .onChange(of: model.commentEditingID) { _, id in
-            commentText = model.note.elements.first { $0.id == id }?.comment ?? ""
-        }
-        .alert("Comment", isPresented: Binding(get: { model.commentEditingID != nil }, set: { _ in })) {
-            let saved = model.note.elements.first { $0.id == model.commentEditingID }?.comment ?? ""
-            TextField("Your comment", text: $commentText, axis: .vertical)
-            Button("Save") { model.finishComment(commentText) }
-            if !saved.isEmpty { Button("Delete", role: .destructive) { model.finishComment("") } }
-            Button("Cancel", role: .cancel) { model.finishComment(saved) }
-        }
-        .alert("Rename Note", isPresented: $renaming) {
-            TextField("Title", text: $draftTitle)
-            Button("Cancel", role: .cancel) {}
-            Button("Rename") { model.rename(draftTitle) }
-        }
-        .alert("Go to Page", isPresented: $askingPage) {
-            TextField("1 to \(model.note.pages.count)", text: $pageEntry)
-                .keyboardType(.numbersAndPunctuation)
-            Button("Cancel", role: .cancel) {}
-            Button("Go") {
-                guard let number = Int(pageEntry.trimmingCharacters(in: .whitespaces)) else { return }
-                model.jump(toPage: min(max(number, 1), model.note.pages.count) - 1)
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { model.saveNow() }
             }
-        }
-        .alert("Web Link", isPresented: $askingWebLink) {
-            TextField("Address", text: $webLink)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            Button("Cancel", role: .cancel) {}
-            Button("Add") { if !webLink.isEmpty { model.addLink(title: webLink, target: webLink) } }
-        }
-        .alert("Plot a Graph", isPresented: $askingGraph) {
-            TextField("Function of x, like x^2 - 3", text: $graphText)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-            Button("Cancel", role: .cancel) {}
-            Button("Plot") {
-                if !model.insertGraph(graphText) { model.message = "Couldn't read “\(graphText)” as a function of x." }
+            .onDisappear { model.close() }
+            .onAppear { model.darkPages = invertPages && colorScheme == .dark }
+            .onChange(of: colorScheme) { _, scheme in model.darkPages = invertPages && scheme == .dark }
+            .onChange(of: invertPages) { _, invert in model.darkPages = invert && colorScheme == .dark }
+            .onChange(of: model.commentEditingID) { _, id in
+                commentText = model.note.elements.first { $0.id == id }?.comment ?? ""
             }
-        }
-        .overlay(alignment: .bottom) {
-            if let notice = model.notice {
-                Text(notice)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(2)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(.regularMaterial, in: Capsule())
-                    .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
-                    .padding(.bottom, 76)
-                    .transition(.opacity)
+    }
+
+    private var alerted: some View {
+        observed
+            .alert("Comment", isPresented: commentShown) {
+                let saved = model.note.elements.first { $0.id == model.commentEditingID }?.comment ?? ""
+                TextField("Your comment", text: $commentText, axis: .vertical)
+                Button("Save") { model.finishComment(commentText) }
+                if !saved.isEmpty { Button("Delete", role: .destructive) { model.finishComment("") } }
+                Button("Cancel", role: .cancel) { model.finishComment(saved) }
             }
-        }
-        .animation(.easeOut(duration: 0.2), value: model.notice)
-        .alert("Margin", isPresented: Binding(get: { model.message != nil }, set: { if !$0 { model.message = nil } })) {
-            Button("OK") {}
-        } message: {
-            Text(model.message ?? "")
-        }
+            .alert("Rename Note", isPresented: $renaming) {
+                TextField("Title", text: $draftTitle)
+                Button("Cancel", role: .cancel) {}
+                Button("Rename") { model.rename(draftTitle) }
+            }
+            .alert("Go to Page", isPresented: $askingPage) {
+                TextField("1 to \(model.note.pages.count)", text: $pageEntry)
+                    .keyboardType(.numbersAndPunctuation)
+                Button("Cancel", role: .cancel) {}
+                Button("Go") {
+                    guard let number = Int(pageEntry.trimmingCharacters(in: .whitespaces)) else { return }
+                    model.jump(toPage: min(max(number, 1), model.note.pages.count) - 1)
+                }
+            }
+            .alert("Web Link", isPresented: $askingWebLink) {
+                TextField("Address", text: $webLink)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("Cancel", role: .cancel) {}
+                Button("Add") { if !webLink.isEmpty { model.addLink(title: webLink, target: webLink) } }
+            }
+            .alert("Plot a Graph", isPresented: $askingGraph) {
+                TextField("Function of x, like x^2 - 3", text: $graphText)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("Cancel", role: .cancel) {}
+                Button("Plot") {
+                    if !model.insertGraph(graphText) { model.message = "Couldn't read “\(graphText)” as a function of x." }
+                }
+            }
     }
 
     // MARK: Top bar
