@@ -15,6 +15,10 @@ Public builds, the website's media and its tour video live in [warriorbiswas-tec
 
 Pushing a tag such as `v1.2.0` builds both apps and publishes them as a release here. Copy its APK and IPA to a new release in `margin-app` to make them public. The website in `website/` is deployed to Vercel and loads its media from `margin-app`.
 
+## Sister app: Quirk Notes
+
+[Quirk Notes](https://github.com/warriorbiswas-tech/Quirk-notes) is made by the same developer for the same job: free handwritten notes, PDF markup and AI study tools, with no account and no subscription. It also runs in any web browser with nothing to install. [Try Quirk Notes](https://quirk-notes.vercel.app/).
+
 ## iPad
 
 - **Ink and PDFs:** PencilKit writing on paper or PDF pages, highlighter, shapes, dashed pen, lasso, study tape, whiteout and redaction, comments, stamps, signatures.
