@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --bg: #fff8f2;
   --surface: #ffffff;
   --ink: #2b2320;
@@ -20,29 +21,6 @@
   --serif: "Fraunces", "New York", Georgia, serif;
   --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --hand: "Caveat", "Bradley Hand", cursive;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1a1513;
-    --surface: #251f1c;
-    --ink: #f7eee8;
-    --soft: #bcaea5;
-    --line: #382f2b;
-    --dot: rgb(255 240 230 / .055);
-    --coral: #ff7a70;
-    --coral-deep: #ff8f86;
-    --on-coral: #2a0b08;
-    --blush: #3b2523;
-    --butter: #3a3120;
-    --mint: #1f3329;
-    --lilac: #2c2641;
-    --sky: #1f2c3c;
-    --peach: #3b2a1f;
-    --frame: #0f0c0b;
-    --shadow: 0 1px 2px rgb(0 0 0 / .3), 0 18px 40px -14px rgb(0 0 0 / .6);
-    --shadow-lg: 0 2px 6px rgb(0 0 0 / .3), 0 30px 60px -20px rgb(0 0 0 / .7);
-  }
 }
 
 * { box-sizing: border-box; }
