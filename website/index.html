@@ -7,7 +7,8 @@
 <meta name="description" content="Margin is a free note-taking and PDF annotation app for iPad and Android. Write with a stylus, mark up textbooks, record lectures, and ask your notes questions with AI that can run entirely on your device.">
 <meta name="keywords" content="note taking app, notes app for iPad, notes app for Android, PDF annotation app, handwriting notes app, stylus notes, study app, AI notes, flashcards, offline AI notes">
 <link rel="canonical" href="https://margin-notes-app.vercel.app/">
-<meta name="theme-color" content="#FAFAF8">
+<meta name="theme-color" content="#FFF8F2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1A1513" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/assets/icon-180.png">
 <link rel="apple-touch-icon" href="/assets/icon-180.png">
 <meta property="og:type" content="website">
@@ -19,6 +20,9 @@
 <meta property="og:video" content="https://margin-notes-app.vercel.app/assets/margin.mp4">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://margin-notes-app.vercel.app/assets/social-preview.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Fraunces:ital,opsz,wght,SOFT,WONK@0,9..144,400..800,0..100,0..1;1,9..144,400..800,0..100,0..1&family=Inter:wght@400;500;600;700&display=swap">
 <link rel="stylesheet" href="/styles.css">
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"Margin","applicationCategory":"ProductivityApplication","operatingSystem":"iPadOS 17 or later, Android 10 or later","description":"A free note-taking and PDF annotation app with stylus ink, audio recording, flashcards and on-device AI.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"downloadUrl":"https://github.com/warriorbiswas-tech/margin-app/releases/latest","screenshot":"https://margin-notes-app.vercel.app/assets/library.jpg","author":{"@type":"Person","name":"warriorbiswas-tech","url":"https://github.com/warriorbiswas-tech"}}
@@ -30,72 +34,210 @@
 {"@type":"Question","name":"Do I need a stylus?","acceptedAnswer":{"@type":"Answer","text":"No. You can write with a finger. With a stylus you also get pressure, optional tilt and palm rejection."}}
 ]}
 </script>
+<script>document.documentElement.classList.add("js")</script>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19.5h14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h13m0 0-5-5m5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 2.5c.6 4.6 2.9 6.9 7.5 7.5-4.6.6-6.9 2.9-7.5 7.5-.6-4.6-2.9-6.9-7.5-7.5 4.6-.6 6.9-2.9 7.5-7.5Z" fill="currentColor"/></symbol>
+  <symbol id="i-heart" viewBox="0 0 24 24"><path d="M12 20s-7.5-4.6-7.5-10.2A4.3 4.3 0 0 1 12 7.3a4.3 4.3 0 0 1 7.5 2.5C19.5 15.4 12 20 12 20Z" fill="currentColor"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm-7 8.5c.8-3.6 3.6-5.5 7-5.5s6.2 1.9 7 5.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="m4 4 16 16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M10 2.5V6m4-3.5V6m-4 12v3.5m4-3.5v3.5M2.5 10H6m-3.5 4H6m12-4h3.5M18 14h3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="m14.5 5.5 4 4M4 20l1-5L15.5 4.5a2.1 2.1 0 0 1 3 0l1 1a2.1 2.1 0 0 1 0 3L9 19l-5 1Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+</svg>
+
+<a class="announce" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest"><span class="new">New</span>Margin 1.0.2 is out for Android and iPad<svg><use href="#i-arrow"/></svg></a>
+
 <header class="nav">
   <a class="brand" href="/"><img src="/assets/icon-180.png" alt="" width="30" height="30">Margin</a>
-  <nav>
+  <nav class="links">
     <a href="#features">Features</a>
-    <a href="#install">Install</a>
+    <a href="#how">How it works</a>
+    <a href="#privacy">Privacy</a>
     <a href="#faq">FAQ</a>
-    <a href="https://github.com/warriorbiswas-tech/margin-app">GitHub</a>
   </nav>
+  <div class="nav-actions">
+    <a class="ghost" href="https://github.com/warriorbiswas-tech/margin-app">GitHub</a>
+    <a class="button primary small" href="#install">Download</a>
+  </div>
 </header>
 
 <main>
   <section class="hero">
-    <p class="eyebrow">Free for iPad and Android</p>
-    <h1>Write it. Find it. Ask it.</h1>
-    <p class="lede">Margin is a note-taking and PDF app that feels like paper, and answers questions from what you wrote. Its AI can run entirely on your own device.</p>
+    <div class="blob b1" aria-hidden="true"></div>
+    <div class="blob b2" aria-hidden="true"></div>
+    <div class="blob b3" aria-hidden="true"></div>
+    <svg class="doodle star-1" aria-hidden="true"><use href="#i-spark"/></svg>
+    <svg class="doodle star-2" aria-hidden="true"><use href="#i-spark"/></svg>
+    <svg class="doodle heart-1" aria-hidden="true"><use href="#i-heart"/></svg>
+
+    <p class="badge"><svg><use href="#i-spark"/></svg>Free for iPad and Android</p>
+    <h1>Write it. Find it.<br><span class="mark">Ask it.<svg viewBox="0 0 300 24" preserveAspectRatio="none" aria-hidden="true"><path d="M4 16c60-9 150-14 292-6" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round"/></svg></span></h1>
+    <p class="lede">The note-taking and PDF app that feels like paper, and answers questions from what you wrote. Its AI can run entirely on your own device.</p>
     <div class="actions">
-      <a class="button primary" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk">Download for Android</a>
-      <a class="button" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa">Download for iPad</a>
+      <a class="button primary" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk"><svg><use href="#i-down"/></svg>Download for Android</a>
+      <a class="button" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa"><svg><use href="#i-down"/></svg>Download for iPad</a>
     </div>
     <p class="note">No account. No subscription. <a href="#install">How to install</a></p>
-    <div class="tablet hero-video">
+
+    <div class="stage reveal">
+      <div class="device"><img src="/assets/editor.jpg" alt="A biology note in Margin with highlights, a sticky note and a circled term" width="1600" height="1000"></div>
+
+      <div class="sticky-note" aria-hidden="true">quiz on friday!<br>ask Margin ♡</div>
+
+      <div class="float card-chat" aria-hidden="true">
+        <p class="q">How is most ATP made?</p>
+        <p class="a">By ATP synthase, powered by the proton gradient across the inner membrane.</p>
+        <span class="tag"><svg><use href="#i-chip"/></svg>Answered on device</span>
+      </div>
+
+      <div class="float card-flash" aria-hidden="true">
+        <span class="mini-label">Flashcard · Biology</span>
+        <p>Where does the Krebs cycle happen?</p>
+        <div class="grades"><span>Again</span><span>Good</span><span>Easy</span></div>
+      </div>
+
+      <div class="float card-rec" aria-hidden="true">
+        <span class="rec-dot"></span>
+        <span class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+        <b>12:04</b>
+      </div>
+    </div>
+  </section>
+
+  <section class="stats reveal" aria-label="Margin at a glance">
+    <div><b>17</b><span>paper styles to write on, plus endless pages</span></div>
+    <div><b>1.1 GB</b><span>private AI model that works offline</span></div>
+    <div><b>0</b><span>accounts, ads or subscriptions</span></div>
+    <div><b>2</b><span>platforms: iPad and Android</span></div>
+  </section>
+
+  <section id="features" class="features">
+    <div class="section-head reveal">
+      <p class="kicker">Everything in one notebook</p>
+      <h2>Made for the way you <em>actually</em> study.</h2>
+      <p>Ink, PDFs, recordings and a study partner that knows what you wrote, in one calm app.</p>
+    </div>
+
+    <div class="bento">
+      <article class="tile wide reveal" style="--tint: var(--blush); --pop: var(--coral)">
+        <span class="chip">Ink</span>
+        <h3>Writes like paper.</h3>
+        <p>Pressure and tilt shape the line, and your palm can rest on the page. Scratch something out to erase it, or finish a stroke and hold still to get a clean shape.</p>
+        <div class="shapes" aria-hidden="true">
+          <svg viewBox="0 0 520 150">
+            <path class="rough" d="M84 34c-38 2-60 30-56 56 5 30 40 44 72 38 34-6 52-34 44-60-8-26-36-36-62-32" fill="none" stroke-width="5" stroke-linecap="round"/>
+            <path class="arrow" d="M196 75h96m0 0-16-14m16 14-16 14" fill="none" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle class="clean" cx="410" cy="75" r="54" fill="none" stroke-width="5"/>
+          </svg>
+          <span class="hand">hold still for a perfect circle</span>
+        </div>
+      </article>
+
+      <article class="tile reveal" style="--tint: var(--butter); --pop: #b77a06">
+        <span class="chip">Flashcards</span>
+        <h3>Remembers for you.</h3>
+        <p>Turn a note into flashcards with spaced review, or into a quiz.</p>
+        <div class="deck" aria-hidden="true">
+          <div class="card c3"></div>
+          <div class="card c2"></div>
+          <div class="card c1"><span>What is the final electron acceptor?</span><small>tap to flip</small></div>
+        </div>
+      </article>
+
+      <article class="tile reveal" style="--tint: var(--mint); --pop: #23845a">
+        <span class="chip">Recording</span>
+        <h3>Hear what was said.</h3>
+        <p>Record a lecture while you write, then tap any line to replay that moment.</p>
+        <div class="player" aria-hidden="true">
+          <span class="play"></span>
+          <span class="wave big"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <b>Lecture 4</b>
+        </div>
+      </article>
+
+      <article class="tile wide reveal" style="--tint: var(--lilac); --pop: #6c4fd0">
+        <span class="chip">Study AI</span>
+        <h3>Answers from your notes.</h3>
+        <p>Ask anything and get the answer from what you wrote. Summaries, key points, mind maps and teach-back too. A private model runs on your device, or add your own NVIDIA key for a stronger one.</p>
+        <div class="pic"><img src="/assets/chat.jpg" alt="Margin answering a question from a note using the on-device model" width="1600" height="1000" loading="lazy"></div>
+      </article>
+
+      <article class="tile reveal" style="--tint: var(--sky); --pop: #2f6fc9">
+        <span class="chip">PDFs</span>
+        <h3>Marks up any PDF.</h3>
+        <p>Highlight textbooks and slides, add notes and stamps, then export to share.</p>
+        <div class="pic"><img src="/assets/pdf.jpg" alt="A textbook chapter on photosynthesis, highlighted and circled in Margin" width="1600" height="1000" loading="lazy"></div>
+      </article>
+
+      <article class="tile wide reveal" style="--tint: var(--peach); --pop: #c35a1c">
+        <span class="chip">Library</span>
+        <h3>Keeps everything in reach.</h3>
+        <p>Folders, tags, notebook covers, templates and tabs. Search reaches typed text, PDFs and handwriting.</p>
+        <div class="pic"><img src="/assets/library.jpg" alt="The Margin library with folders and notebook covers" width="1600" height="1000" loading="lazy"></div>
+      </article>
+    </div>
+    <p class="caption">Screens shown from the Android app.</p>
+  </section>
+
+  <section id="how" class="how">
+    <div class="section-head reveal">
+      <p class="kicker">How it works</p>
+      <h2>Three steps. That's the whole app.</h2>
+    </div>
+    <ol class="steps">
+      <li class="reveal" style="--tint: var(--blush); --pop: var(--coral)"><span class="step-icon"><svg><use href="#i-pen"/></svg></span><h3>Write it.</h3><p>Take notes by hand or by keyboard, import slides and textbooks, and record the lecture alongside.</p></li>
+      <li class="reveal" style="--tint: var(--sky); --pop: #2f6fc9"><span class="step-icon"><svg><use href="#i-search"/></svg></span><h3>Find it.</h3><p>Search finds your handwriting, PDFs and typed text, across every folder and tag.</p></li>
+      <li class="reveal" style="--tint: var(--lilac); --pop: #6c4fd0"><span class="step-icon"><svg><use href="#i-chat"/></svg></span><h3>Ask it.</h3><p>Chat with a note, make flashcards and quizzes, or explain a topic and get checked.</p></li>
+    </ol>
+  </section>
+
+  <section class="tour">
+    <div class="section-head reveal">
+      <p class="kicker">See it move</p>
+      <h2>The 22-second tour</h2>
+    </div>
+    <div class="device video reveal">
       <video src="/assets/margin.mp4" poster="/assets/poster.jpg" controls muted playsinline preload="metadata" aria-label="A 22 second tour of Margin"></video>
     </div>
   </section>
 
-  <section id="features" class="feature">
-    <div class="copy">
-      <h2>Writes like paper.</h2>
-      <p>Pressure and tilt shape the line, and your palm can rest on the page. Scratch something out to erase it. Finish a stroke and hold still, and it becomes a clean line, circle or box.</p>
+  <section id="privacy" class="privacy">
+    <div class="section-head reveal">
+      <p class="kicker">Private by design</p>
+      <h2>Your notes are yours.</h2>
     </div>
-    <div class="tablet"><img src="/assets/editor.jpg" alt="A biology note in Margin with highlights, a sticky note and a circled term" width="1600" height="1000" loading="lazy"></div>
-  </section>
-
-  <section class="feature flip">
-    <div class="copy">
-      <h2>Marks up any PDF.</h2>
-      <p>Bring in textbooks, slides and papers. Highlight, underline and circle right on the page, add sticky notes and stamps, then export the whole thing as a PDF to share.</p>
+    <div class="promises">
+      <div class="promise reveal" style="--tint: var(--butter); --pop: #b77a06">
+        <span class="icon"><svg><use href="#i-user"/></svg></span>
+        <h3>No account</h3>
+        <p>Open it and start writing. Nothing to sign up for, nothing to pay.</p>
+      </div>
+      <div class="promise reveal" style="--tint: var(--blush); --pop: var(--coral)">
+        <span class="icon"><svg><use href="#i-lock"/></svg></span>
+        <h3>Stays on your device</h3>
+        <p>Everything lives on your device, and in your own iCloud Drive or Google backup.</p>
+      </div>
+      <div class="promise reveal" style="--tint: var(--lilac); --pop: #6c4fd0">
+        <span class="icon"><svg><use href="#i-chip"/></svg></span>
+        <h3>AI that stays home</h3>
+        <p>A private model answers right on your tablet or phone, even on a plane.</p>
+      </div>
     </div>
-    <div class="tablet"><img src="/assets/pdf.jpg" alt="A textbook chapter on photosynthesis, highlighted and circled in Margin" width="1600" height="1000" loading="lazy"></div>
   </section>
-
-  <section class="feature">
-    <div class="copy">
-      <h2>Answers from your notes.</h2>
-      <p>Ask a question and get the answer from what you wrote. Turn any note into a summary, flashcards with spaced review, a quiz or a mind map, or explain a topic and have Margin check your understanding.</p>
-      <p>A private model runs on your device. Add your own NVIDIA key for a stronger one, and Margin falls back to the device whenever NVIDIA can't answer.</p>
-    </div>
-    <div class="tablet"><img src="/assets/chat.jpg" alt="Margin answering a question from a note using the on-device model" width="1600" height="1000" loading="lazy"></div>
-  </section>
-
-  <section class="feature flip">
-    <div class="copy">
-      <h2>Keeps everything in reach.</h2>
-      <p>Folders, tags, notebook covers, templates and tabs for the notes you have open. Search reaches your typed text, PDFs and handwriting. Record a lecture, then tap what you wrote to hear what was being said at that moment.</p>
-    </div>
-    <div class="tablet"><img src="/assets/library.jpg" alt="The Margin library with folders and notebook covers" width="1600" height="1000" loading="lazy"></div>
-  </section>
-
-  <p class="caption">Screens shown from the Android app.</p>
 
   <section id="install" class="install">
-    <h2>Install in a minute</h2>
+    <div class="section-head reveal">
+      <p class="kicker">Ready in a minute</p>
+      <h2>Install Margin</h2>
+    </div>
     <div class="columns">
-      <div>
+      <div class="platform reveal" style="--tint: var(--mint)">
         <h3>Android</h3>
         <ol>
           <li><a href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk">Download the APK</a> on your device.</li>
@@ -103,8 +245,9 @@
           <li>For offline AI, open Settings and download the writing model.</li>
         </ol>
         <p class="small">Android 10 or later, 64-bit. The on-device AI needs 4 GB of memory or more.</p>
+        <a class="button primary" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk"><svg><use href="#i-down"/></svg>Get the APK</a>
       </div>
-      <div>
+      <div class="platform reveal" style="--tint: var(--lilac)">
         <h3>iPad</h3>
         <ol>
           <li><a href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa">Download the IPA</a> on a Mac or Windows PC.</li>
@@ -112,23 +255,57 @@
           <li>For offline AI, open Settings and download the writing model.</li>
         </ol>
         <p class="small">iPadOS 17 or later. Margin isn't on the App Store yet, and with a free Apple ID it has to be reinstalled every 7 days.</p>
+        <a class="button primary" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa"><svg><use href="#i-down"/></svg>Get the IPA</a>
       </div>
     </div>
   </section>
 
   <section id="faq" class="faq">
-    <h2>Questions</h2>
-    <details open><summary>Is Margin free?</summary><p>Yes. There is no subscription and no account. The optional online AI uses your own NVIDIA API key.</p></details>
-    <details><summary>Does the AI work offline?</summary><p>Yes. Download the 1.1 GB on-device model once from Settings, and questions are answered on your device with nothing sent anywhere.</p></details>
-    <details><summary>Where do my notes go?</summary><p>They stay on your device, and in your own iCloud Drive folder or Google backup if you use one. If you add an NVIDIA key, your question and the notes it needs are sent to NVIDIA to answer it.</p></details>
-    <details><summary>Do I need a stylus?</summary><p>No. You can write with a finger. With a stylus you also get pressure, optional tilt and palm rejection.</p></details>
-    <details><summary>Are the iPad and Android apps the same?</summary><p>The core is: ink, PDFs, recording and the study tools. The iPad app is further along, with live transcripts, Live Text, iCloud sync, more paper styles and tools such as signatures and study tape. Notes don't move between the two yet.</p></details>
+    <div class="section-head reveal">
+      <p class="kicker">Good to know</p>
+      <h2>Questions</h2>
+    </div>
+    <details open><summary>Is Margin free?<svg><use href="#i-plus"/></svg></summary><p>Yes. There is no subscription and no account. The optional online AI uses your own NVIDIA API key.</p></details>
+    <details><summary>Does the AI work offline?<svg><use href="#i-plus"/></svg></summary><p>Yes. Download the 1.1 GB on-device model once from Settings, and questions are answered on your device with nothing sent anywhere.</p></details>
+    <details><summary>Where do my notes go?<svg><use href="#i-plus"/></svg></summary><p>They stay on your device, and in your own iCloud Drive folder or Google backup if you use one. If you add an NVIDIA key, your question and the notes it needs are sent to NVIDIA to answer it.</p></details>
+    <details><summary>Do I need a stylus?<svg><use href="#i-plus"/></svg></summary><p>No. You can write with a finger. With a stylus you also get pressure, optional tilt and palm rejection.</p></details>
+    <details><summary>Are the iPad and Android apps the same?<svg><use href="#i-plus"/></svg></summary><p>The core is: ink, PDFs, recording and the study tools. The iPad app is further along, with live transcripts, Live Text, iCloud sync, more paper styles and tools such as signatures and study tape. Notes don't move between the two yet.</p></details>
+  </section>
+
+  <section class="cta reveal">
+    <svg class="doodle cta-star" aria-hidden="true"><use href="#i-spark"/></svg>
+    <svg class="doodle cta-heart" aria-hidden="true"><use href="#i-heart"/></svg>
+    <h2>Your next page is blank.</h2>
+    <p>Free, private, and ready in a minute.</p>
+    <div class="actions">
+      <a class="button primary" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk"><svg><use href="#i-down"/></svg>Download for Android</a>
+      <a class="button" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa"><svg><use href="#i-down"/></svg>Download for iPad</a>
+    </div>
   </section>
 </main>
 
 <footer>
-  <span>Margin, by <a href="https://github.com/warriorbiswas-tech">warriorbiswas-tech</a></span>
-  <a href="https://github.com/warriorbiswas-tech/margin-app">GitHub</a>
+  <div class="foot-brand">
+    <a class="brand" href="/"><img src="/assets/icon-180.png" alt="" width="30" height="30">Margin</a>
+    <p>Notes that feel like paper and answer like a tutor.</p>
+  </div>
+  <div class="foot-cols">
+    <div><h4>Product</h4><a href="#features">Features</a><a href="#how">How it works</a><a href="#privacy">Privacy</a><a href="#faq">FAQ</a></div>
+    <div><h4>Download</h4><a href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk">Android</a><a href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa">iPad</a><a href="https://github.com/warriorbiswas-tech/margin-app/releases">All releases</a></div>
+    <div><h4>Project</h4><a href="https://github.com/warriorbiswas-tech/margin-app">GitHub</a><a href="https://github.com/warriorbiswas-tech">warriorbiswas-tech</a></div>
+  </div>
+  <p class="legal">© 2026 Margin. Made with <svg class="tiny-heart" aria-label="love"><use href="#i-heart"/></svg> by warriorbiswas-tech.</p>
 </footer>
+
+<script>
+if ("IntersectionObserver" in window) {
+  const seen = new IntersectionObserver(entries => {
+    for (const e of entries) if (e.isIntersecting) { e.target.classList.add("in"); seen.unobserve(e.target) }
+  }, { rootMargin: "0px 0px -8% 0px" })
+  document.querySelectorAll(".reveal").forEach(el => seen.observe(el))
+} else {
+  document.querySelectorAll(".reveal").forEach(el => el.classList.add("in"))
+}
+</script>
 </body>
 </html>
