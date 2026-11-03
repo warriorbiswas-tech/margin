@@ -2,14 +2,18 @@
 
 A note-taking and PDF annotation app for iPad and Android, built for lectures, textbooks and meetings. Notes stay on the device and your own iCloud Drive or Google backup, unless you add an NVIDIA key for the online AI.
 
+Write it. Find it. Ask it. Margin feels like writing on paper, keeps lectures, textbooks and meetings in one searchable library, and answers questions from what you wrote with an AI that can run entirely on your device.
+
+**[margin-notes-app.vercel.app](https://margin-notes-app.vercel.app)** · [Download for Android](https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk) · [Download for iPad](https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa)
+
 ## Download
 
-Get the latest build from [Releases](../../releases/latest).
+Public builds, the website's media and its tour video live in [warriorbiswas-tech/margin-app](https://github.com/warriorbiswas-tech/margin-app).
 
-- **Android:** download `Margin-…-Android.apk`, open it and allow your browser to install apps when asked. It needs Android 10 or later on a 64-bit device.
-- **iPad:** download `Margin-…-iPad.ipa` and install it from a Mac or Windows PC with [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io), signing in with your Apple ID. It needs iPadOS 17 or later. With a free Apple ID the app has to be reinstalled every 7 days.
+- **Android:** download `Margin-Android.apk`, open it and allow your browser to install apps when asked. It needs Android 10 or later on a 64-bit device.
+- **iPad:** download `Margin-iPad.ipa` and install it from a Mac or Windows PC with [Sideloadly](https://sideloadly.io) or [AltStore](https://altstore.io), signing in with your Apple ID. It needs iPadOS 17 or later. With a free Apple ID the app has to be reinstalled every 7 days.
 
-Pushing a tag such as `v1.2.0` builds both apps and publishes them as a new release.
+Pushing a tag such as `v1.2.0` builds both apps and publishes them as a release here. Copy its APK and IPA to a new release in `margin-app` to make them public. The website in `website/` is deployed to Vercel and loads its media from `margin-app`.
 
 ## iPad
 

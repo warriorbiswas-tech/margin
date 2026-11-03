@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://margin-notes-app.vercel.app/sitemap.xml

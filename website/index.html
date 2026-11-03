@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Margin: Free Note-Taking App for iPad and Android with On-Device AI</title>
+<meta name="description" content="Margin is a free note-taking and PDF annotation app for iPad and Android. Write with a stylus, mark up textbooks, record lectures, and ask your notes questions with AI that can run entirely on your device.">
+<meta name="keywords" content="note taking app, notes app for iPad, notes app for Android, PDF annotation app, handwriting notes app, stylus notes, study app, AI notes, flashcards, offline AI notes">
+<link rel="canonical" href="https://margin-notes-app.vercel.app/">
+<meta name="theme-color" content="#FAFAF8">
+<link rel="icon" href="/assets/icon-180.png">
+<link rel="apple-touch-icon" href="/assets/icon-180.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Margin">
+<meta property="og:title" content="Margin: Write it. Find it. Ask it.">
+<meta property="og:description" content="Free notes and PDF markup for iPad and Android, with AI that can answer from your notes right on your device.">
+<meta property="og:url" content="https://margin-notes-app.vercel.app/">
+<meta property="og:image" content="https://margin-notes-app.vercel.app/assets/social-preview.png">
+<meta property="og:video" content="https://margin-notes-app.vercel.app/assets/margin.mp4">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://margin-notes-app.vercel.app/assets/social-preview.png">
+<link rel="stylesheet" href="/styles.css">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Margin","applicationCategory":"ProductivityApplication","operatingSystem":"iPadOS 17 or later, Android 10 or later","description":"A free note-taking and PDF annotation app with stylus ink, audio recording, flashcards and on-device AI.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"downloadUrl":"https://github.com/warriorbiswas-tech/margin-app/releases/latest","screenshot":"https://margin-notes-app.vercel.app/assets/library.jpg","author":{"@type":"Person","name":"warriorbiswas-tech","url":"https://github.com/warriorbiswas-tech"}}
+</script>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
+{"@type":"Question","name":"Is Margin free?","acceptedAnswer":{"@type":"Answer","text":"Yes. There is no subscription and no account. The optional online AI uses your own NVIDIA API key."}},
+{"@type":"Question","name":"Does the AI work offline?","acceptedAnswer":{"@type":"Answer","text":"Yes. Download the 1.1 GB on-device model once from Settings, and questions are answered on your device with nothing sent anywhere."}},
+{"@type":"Question","name":"Do I need a stylus?","acceptedAnswer":{"@type":"Answer","text":"No. You can write with a finger. With a stylus you also get pressure, optional tilt and palm rejection."}}
+]}
+</script>
+</head>
+<body>
+<header class="nav">
+  <a class="brand" href="/"><img src="/assets/icon-180.png" alt="" width="30" height="30">Margin</a>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#install">Install</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/warriorbiswas-tech/margin-app">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <section class="hero">
+    <p class="eyebrow">Free for iPad and Android</p>
+    <h1>Write it. Find it. Ask it.</h1>
+    <p class="lede">Margin is a note-taking and PDF app that feels like paper, and answers questions from what you wrote. Its AI can run entirely on your own device.</p>
+    <div class="actions">
+      <a class="button primary" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk">Download for Android</a>
+      <a class="button" href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa">Download for iPad</a>
+    </div>
+    <p class="note">No account. No subscription. <a href="#install">How to install</a></p>
+    <div class="tablet hero-video">
+      <video src="/assets/margin.mp4" poster="/assets/poster.jpg" controls muted playsinline preload="metadata" aria-label="A 22 second tour of Margin"></video>
+    </div>
+  </section>
+
+  <section id="features" class="feature">
+    <div class="copy">
+      <h2>Writes like paper.</h2>
+      <p>Pressure and tilt shape the line, and your palm can rest on the page. Scratch something out to erase it. Finish a stroke and hold still, and it becomes a clean line, circle or box.</p>
+    </div>
+    <div class="tablet"><img src="/assets/editor.jpg" alt="A biology note in Margin with highlights, a sticky note and a circled term" width="1600" height="1000" loading="lazy"></div>
+  </section>
+
+  <section class="feature flip">
+    <div class="copy">
+      <h2>Marks up any PDF.</h2>
+      <p>Bring in textbooks, slides and papers. Highlight, underline and circle right on the page, add sticky notes and stamps, then export the whole thing as a PDF to share.</p>
+    </div>
+    <div class="tablet"><img src="/assets/pdf.jpg" alt="A textbook chapter on photosynthesis, highlighted and circled in Margin" width="1600" height="1000" loading="lazy"></div>
+  </section>
+
+  <section class="feature">
+    <div class="copy">
+      <h2>Answers from your notes.</h2>
+      <p>Ask a question and get the answer from what you wrote. Turn any note into a summary, flashcards with spaced review, a quiz or a mind map, or explain a topic and have Margin check your understanding.</p>
+      <p>A private model runs on your device. Add your own NVIDIA key for a stronger one, and Margin falls back to the device whenever NVIDIA can't answer.</p>
+    </div>
+    <div class="tablet"><img src="/assets/chat.jpg" alt="Margin answering a question from a note using the on-device model" width="1600" height="1000" loading="lazy"></div>
+  </section>
+
+  <section class="feature flip">
+    <div class="copy">
+      <h2>Keeps everything in reach.</h2>
+      <p>Folders, tags, notebook covers, templates and tabs for the notes you have open. Search reaches your typed text, PDFs and handwriting. Record a lecture, then tap what you wrote to hear what was being said at that moment.</p>
+    </div>
+    <div class="tablet"><img src="/assets/library.jpg" alt="The Margin library with folders and notebook covers" width="1600" height="1000" loading="lazy"></div>
+  </section>
+
+  <p class="caption">Screens shown from the Android app.</p>
+
+  <section id="install" class="install">
+    <h2>Install in a minute</h2>
+    <div class="columns">
+      <div>
+        <h3>Android</h3>
+        <ol>
+          <li><a href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-Android.apk">Download the APK</a> on your device.</li>
+          <li>Open it, and allow your browser to install apps when asked.</li>
+          <li>For offline AI, open Settings and download the writing model.</li>
+        </ol>
+        <p class="small">Android 10 or later, 64-bit. The on-device AI needs 4 GB of memory or more.</p>
+      </div>
+      <div>
+        <h3>iPad</h3>
+        <ol>
+          <li><a href="https://github.com/warriorbiswas-tech/margin-app/releases/latest/download/Margin-iPad.ipa">Download the IPA</a> on a Mac or Windows PC.</li>
+          <li>Install it with <a href="https://sideloadly.io">Sideloadly</a> or <a href="https://altstore.io">AltStore</a>, signing in with your Apple ID.</li>
+          <li>For offline AI, open Settings and download the writing model.</li>
+        </ol>
+        <p class="small">iPadOS 17 or later. Margin isn't on the App Store yet, and with a free Apple ID it has to be reinstalled every 7 days.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="faq" class="faq">
+    <h2>Questions</h2>
+    <details open><summary>Is Margin free?</summary><p>Yes. There is no subscription and no account. The optional online AI uses your own NVIDIA API key.</p></details>
+    <details><summary>Does the AI work offline?</summary><p>Yes. Download the 1.1 GB on-device model once from Settings, and questions are answered on your device with nothing sent anywhere.</p></details>
+    <details><summary>Where do my notes go?</summary><p>They stay on your device, and in your own iCloud Drive folder or Google backup if you use one. If you add an NVIDIA key, your question and the notes it needs are sent to NVIDIA to answer it.</p></details>
+    <details><summary>Do I need a stylus?</summary><p>No. You can write with a finger. With a stylus you also get pressure, optional tilt and palm rejection.</p></details>
+    <details><summary>Are the iPad and Android apps the same?</summary><p>The core is: ink, PDFs, recording and the study tools. The iPad app is further along, with live transcripts, Live Text, iCloud sync, more paper styles and tools such as signatures and study tape. Notes don't move between the two yet.</p></details>
+  </section>
+</main>
+
+<footer>
+  <span>Margin, by <a href="https://github.com/warriorbiswas-tech">warriorbiswas-tech</a></span>
+  <a href="https://github.com/warriorbiswas-tech/margin-app">GitHub</a>
+</footer>
+</body>
+</html>

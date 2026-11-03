@@ -4,3 +4,6 @@ DerivedData/
 build/
 *.gguf
 ggml-*.bin
+
+# Served from warriorbiswas-tech/margin-app, which keeps the site's images and video
+website/assets/
